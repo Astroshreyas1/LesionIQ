@@ -1,0 +1,234 @@
+Total rows: 23257
+Total columns: 37
+
+============================================================
+FIELD AUDIT
+============================================================
+
+[isic_id]
+  dtype   : object
+  nulls   : 0 (0.0%)
+  unique  : 23257
+
+[attribution]
+  dtype   : object
+  nulls   : 0 (0.0%)
+  unique  : 3
+  values  : {'Hospital Clínic de Barcelona': 12413, 'ViDIR Group, Department of Dermatology, Medical University of Vienna': 10015, 'Anonymous': 829}
+
+[copyright_license]
+  dtype   : object
+  nulls   : 0 (0.0%)
+  unique  : 2
+  values  : {'CC-BY-NC': 22428, 'CC-0': 829}
+
+[age_approx]
+  dtype   : float64
+  nulls   : 268 (1.2%)
+  unique  : 18
+  range   : 0.0 – 85.0
+  mean    : 54.42
+
+[anatom_site_1]
+  dtype   : object
+  nulls   : 878 (3.8%)
+  unique  : 5
+  values  : {'Trunk': 10559, 'Lower extremity': 4737, 'Head and neck': 4386, 'Upper extremity': 2649, 'Anogenital region': 48}
+
+[anatom_site_2]
+  dtype   : object
+  nulls   : 12490 (53.7%)
+  unique  : 17
+  values  : {'Anterior trunk': 6683, 'Posterior trunk': 2466, 'Head': 935, 'Foot': 325, 'Neck': 168, 'Hand': 90, 'Genital region': 48, 'Shoulder': 18, 'Thigh': 9, 'Buttock': 8, 'Lateral trunk': 6, 'Lower leg': 4, 'Upper arm': 3, 'Ankle': 1, 'Elbow': 1, 'Forearm': 1, 'Knee': 1}
+
+[anatom_site_3]
+  dtype   : object
+  nulls   : 20707 (89.0%)
+  unique  : 13
+  values  : {'Anterior abdomen': 1114, 'Face': 751, 'Anterior chest': 483, 'Scalp': 128, 'Ear': 56, 'Upper back': 4, 'Lower back': 3, 'Sole of foot': 3, 'Toes': 2, 'Medial thigh': 2, 'Calf': 2, 'Dorsum of foot': 1, 'Lateral abdomen': 1}
+
+[anatom_site_4]
+  dtype   : object
+  nulls   : 23246 (100.0%)
+  unique  : 6
+  values  : {'Breast': 4, 'Great toe': 2, 'Upper medial thigh': 2, 'Upper anterior chest': 1, 'Cheek': 1, 'Forehead': 1}
+
+[anatom_site_5]
+  dtype   : object
+  nulls   : 23256 (100.0%)
+  unique  : 1
+  values  : {'Clavicle': 1}
+
+[anatom_site_general]
+  dtype   : object
+  nulls   : 1835 (7.9%)
+  unique  : 8
+  values  : {'anterior torso': 6683, 'lower extremity': 4737, 'head/neck': 4386, 'upper extremity': 2649, 'posterior torso': 2466, 'palms/soles': 388, 'oral/genital': 107, 'lateral torso': 6}
+
+[anatom_site_special]
+  dtype   : object
+  nulls   : 22346 (96.1%)
+  unique  : 3
+  values  : {'acral NOS': 413, 'acral palms or soles': 391, 'oral or genital': 107}
+
+[clin_size_long_diam_mm]
+  dtype   : float64
+  nulls   : 22701 (97.6%)
+  unique  : 37
+  range   : 1.0 – 100.0
+  mean    : 6.29
+
+[concomitant_biopsy]
+  dtype   : bool
+  nulls   : 0 (0.0%)
+  unique  : 2
+
+[dermoscopic_type]
+  dtype   : object
+  nulls   : 23254 (100.0%)
+  unique  : 1
+  values  : {'contact non-polarized': 3}
+
+[diagnosis_1]
+  dtype   : object
+  nulls   : 0 (0.0%)
+  unique  : 3
+  values  : {'Benign': 14290, 'Malignant': 8099, 'Indeterminate': 868}
+
+[diagnosis_2]
+  dtype   : object
+  nulls   : 0 (0.0%)
+  unique  : 10
+  values  : {'Benign melanocytic proliferations': 11555, 'Malignant melanocytic proliferations (Melanoma)': 4148, 'Malignant adnexal epithelial proliferations - Follicular': 3323, 'Benign epidermal proliferations': 2241, 'Indeterminate epidermal proliferations': 867, 'Malignant epidermal proliferations': 628, 'Benign soft tissue proliferations - Vascular': 253, 'Benign soft tissue proliferations - Fibro-histiocytic': 239, 'Collision - Only benign proliferations': 2, 'Indeterminate melanocytic proliferations': 1}
+
+[diagnosis_3]
+  dtype   : object
+  nulls   : 255 (1.1%)
+  unique  : 13
+  values  : {'Nevus': 11555, 'Melanoma, NOS': 4014, 'Basal cell carcinoma': 3323, 'Pigmented benign keratosis': 1099, 'Seborrheic keratosis': 932, 'Solar or actinic keratosis': 867, 'Squamous cell carcinoma, NOS': 628, 'Dermatofibroma': 239, 'Solar lentigo': 209, 'Melanoma Invasive': 68, 'Melanoma in situ': 66, 'Epidermal nevus': 1, 'Atypical melanocytic neoplasm': 1}
+
+[diagnosis_4]
+  dtype   : object
+  nulls   : 22771 (97.9%)
+  unique  : 19
+  values  : {'Nevus, Atypical, Dysplastic, or Clark': 206, 'Nevus, Congenital': 100, 'Nevus, NOS, Compound': 56, 'Nevus, Lentiginous': 26, 'Nevus, NOS, Dermal': 22, 'Nevus, NOS, Junctional': 13, 'Melanoma in situ, Lentigo maligna type': 12, 'Nevus, Recurrent or persistent': 10, 'Melanoma in situ, associated with a nevus': 10, 'Nevus, Spitz': 7, 'Melanoma Invasive, Superficial spreading': 5, 'Melanoma Invasive, Associated with a nevus': 4, 'Melanoma Invasive, On chronically sun-exposed skin or lentigo maligna melanoma': 3, 'Blue nevus': 3, 'Nevus, Combined': 3, 'Melanoma Invasive, Arising in a congenital nevus': 3, 'Melanoma Invasive, Acral or Acral-lentiginous': 1, 'Nevus, Reed': 1, 'Nevus, Spilus': 1}
+
+[diagnosis_5]
+  dtype   : object
+  nulls   : 23092 (99.3%)
+  unique  : 4
+  values  : {'Nevus, Dysplastic': 75, 'Nevus, Clark': 62, 'Nevus, Atypical': 18, 'Nevus, Congenital, by histopathological pattern': 10}
+
+[diagnosis_confirm_type]
+  dtype   : object
+  nulls   : 2296 (9.9%)
+  unique  : 4
+  values  : {'histopathology': 15404, 'serial imaging showing no change': 3704, 'single image expert consensus': 1016, 'confocal microscopy with consensus dermoscopy': 837}
+
+[family_hx_mm]
+  dtype   : object
+  nulls   : 22712 (97.7%)
+  unique  : 2
+  values  : {False: 450, True: 95}
+
+[image_type]
+  dtype   : object
+  nulls   : 0 (0.0%)
+  unique  : 1
+  values  : {'dermoscopic': 23257}
+
+[lesion_id]
+  dtype   : object
+  nulls   : 826 (3.6%)
+  unique  : 11049
+
+[melanocytic]
+  dtype   : bool
+  nulls   : 0 (0.0%)
+  unique  : 2
+
+[patient_id]
+  dtype   : object
+  nulls   : 23257 (100.0%)
+  unique  : 0
+  values  : {}
+
+[personal_hx_mm]
+  dtype   : object
+  nulls   : 22702 (97.6%)
+  unique  : 2
+  values  : {False: 393, True: 162}
+
+[sex]
+  dtype   : object
+  nulls   : 204 (0.9%)
+  unique  : 2
+  values  : {'male': 12279, 'female': 10774}
+
+[image]
+  dtype   : object
+  nulls   : 0 (0.0%)
+  unique  : 23257
+
+[MEL]
+  dtype   : float64
+  nulls   : 0 (0.0%)
+  unique  : 2
+  range   : 0.0 – 1.0
+  mean    : 0.18
+
+[NV]
+  dtype   : float64
+  nulls   : 0 (0.0%)
+  unique  : 2
+  range   : 0.0 – 1.0
+  mean    : 0.5
+
+[BCC]
+  dtype   : float64
+  nulls   : 0 (0.0%)
+  unique  : 2
+  range   : 0.0 – 1.0
+  mean    : 0.14
+
+[AK]
+  dtype   : float64
+  nulls   : 0 (0.0%)
+  unique  : 2
+  range   : 0.0 – 1.0
+  mean    : 0.04
+
+[BKL]
+  dtype   : float64
+  nulls   : 0 (0.0%)
+  unique  : 2
+  range   : 0.0 – 1.0
+  mean    : 0.1
+
+[DF]
+  dtype   : float64
+  nulls   : 0 (0.0%)
+  unique  : 2
+  range   : 0.0 – 1.0
+  mean    : 0.01
+
+[VASC]
+  dtype   : float64
+  nulls   : 0 (0.0%)
+  unique  : 2
+  range   : 0.0 – 1.0
+  mean    : 0.01
+
+[SCC]
+  dtype   : float64
+  nulls   : 0 (0.0%)
+  unique  : 2
+  range   : 0.0 – 1.0
+  mean    : 0.03
+
+[UNK]
+  dtype   : float64
+  nulls   : 0 (0.0%)
+  unique  : 1
+  range   : 0.0 – 0.0
+  mean    : 0.0
