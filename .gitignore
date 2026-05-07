@@ -69,6 +69,7 @@ synthetic_stylegan/
 *.jpeg
 *.bmp
 !docs/*.png
+!preprocessing/SSIM for ISIC 2019/*.png
 
 # LoRA weights
 lora_weights/
