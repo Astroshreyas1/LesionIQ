@@ -1,0 +1,74 @@
+# ============================================================
+# LesionIQ — .gitignore
+# ============================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model checkpoints in output/ (training artifacts)
+output/checkpoints/*.pt
+output/checkpoints/*.pth
+
+# Checkpoints (excluded from git)
+checkpoints/*.pt
+checkpoints/*.pth
+
+# Training artifacts
+output/logs/
+output/reports/
+output/explainability/
+wandb/
+runs/
+
+# Data files (too large for git — download separately)
+data/*.csv
+data/*.zip
+*.csv
+*.zip
+
+# StyleGAN2-ADA (clone separately)
+synthetic/stylegan2/stylegan2-ada-pytorch/
+training-runs/
+datasets/
+
+# Synthetic images (generated, not tracked)
+synthetic_output/
+synthetic_stylegan/
+
+# Large media
+*.png
+*.jpg
+*.jpeg
+*.bmp
+!docs/*.png
+
+# LoRA weights
+lora_weights/
