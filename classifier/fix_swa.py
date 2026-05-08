@@ -1,8 +1,33 @@
 """
-LesionIQ — Fix SWA BN Update
-==============================
-Re-runs the SWA batch norm update with metadata for 'full' mode checkpoint.
-No retraining needed — takes ~2 minutes.
+LesionIQ -- SWA Batch Norm Recovery (fix_swa.py)
+==================================================
+Standalone utility to re-run SWA batch normalization statistics for models
+that use metadata in the forward pass (i.e., the 'full' mode).
+
+Background:
+    PyTorch's `torch.optim.swa_utils.update_bn()` only passes images to
+    the model's forward method. However, LesionIQHybrid in 'full' mode
+    requires (images, meta) -- the metadata MLP needs the 13-d clinical
+    vector. This causes update_bn() to silently produce garbage BN stats,
+    collapsing the SWA model's performance.
+
+    This script manually implements the BN update loop by passing both
+    images and metadata from the training set, correctly re-estimating
+    running_mean and running_var for all BatchNorm layers.
+
+When to use:
+    - After training completes AND the SWA checkpoint has stale BN stats
+    - Only needed once per SWA checkpoint -- the output is saved as
+      best_full_swa.pt (or best_image_only_swa.pt)
+    - NOT needed for effnet_only or swin_only (no metadata in forward)
+
+Inputs:
+    - Reads: checkpoints/best_full.pt (or configure CKPT_PATH below)
+    - Uses: full training set for BN stat estimation
+
+Outputs:
+    - Saves: checkpoints/best_full_swa.pt with corrected BN stats
+    - Prints: val_f1 comparison (original vs SWA)
 
 Usage:
     python fix_swa.py
