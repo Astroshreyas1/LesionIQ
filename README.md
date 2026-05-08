@@ -470,6 +470,92 @@ The SLM receives `original.png` + `gradcam.png` + `diagnosis.json` → generates
 
 ---
 
+## Post-Training Optimization Updates
+
+Three rounds of post-training threshold optimization were performed on the 3-model ensemble (effnet_only + image_only + full) using 4,993 validation images. No model retraining was performed — all improvements come from DiffEvo logit scaling and post-hoc MEL recall constraints.
+
+### v1 — Baseline DiffEvo (`boost_f1.py`)
+
+First pass: symmetric bounds `[0.3, 4.0]` for all 8 classes. Three methods tested:
+- **Differential Evolution** (global optimizer with local polish)
+- **Greedy per-class grid search** (sequential, 3 passes)
+- **5-fold cross-validated thresholds** (unbiased estimate)
+
+| Configuration | Macro-F1 |
+|---------------|----------|
+| Single model (full) baseline | 0.5924 |
+| Single model + DiffEvo | 0.6108 |
+| Ensemble baseline (3 models) | 0.5938 |
+| **Ensemble + DiffEvo** | **0.6165** |
+
+**Outcome:** DiffEvo dominated. Ensemble + DiffEvo selected as the production baseline.
+
+---
+
+### v2 — Clinical-Aware Optimization (`boost_f1_v2.py`)
+
+Targeted AK/SCC confusion and MEL recall. Key changes from v1:
+- **Asymmetric bounds:** AK and SCC boosted to `[1.5, 6.0]` (vs. `[0.3, 4.0]`)
+- **Clinical-weighted DiffEvo:** MEL weight=2.0, SCC weight=2.5 (penalizes malignant misses)
+- **MEL recall safety:** post-hoc threshold to force MEL recall >= 85%
+
+| Configuration | Macro-F1 | MEL Recall |
+|---------------|----------|------------|
+| Ensemble baseline | 0.5938 | 0.633 |
+| Asymmetric DiffEvo | 0.6165 | 0.635 |
+| Clinical-Weighted DiffEvo | 0.6165 | 0.635 |
+| + MEL safety (target 85%) | 0.5724 | 0.850 |
+
+**Outcome:** 85% MEL recall target was too aggressive — dropped macro-F1 by 0.044. Asymmetric DiffEvo without MEL safety selected.
+
+---
+
+### v3 — Confusion Matrix Reframe (`boost_f1_v3.py`) *(current)*
+
+Reframed priorities based on actual confusion matrix failure modes:
+
+| Priority | Failure | Miss Rate | Clinical Risk |
+|----------|---------|-----------|---------------|
+| P1 | MEL to NV | 21.7% | Missed melanoma |
+| P2 | SCC to BCC | 31.7% | Missed SCC mismanaged as BCC |
+| P3 | AK to BKL | 19.7% | Pre-malignant missed as benign |
+
+Key changes from v2:
+- **BCC suppressed** to `[0.3, 3.0]` (was `[0.3, 4.0]`) — BCC was absorbing SCC predictions
+- **SCC boosted** to `[2.0, 7.0]` (was `[1.5, 6.0]`) — forces SCC to compete with BCC
+- **NV capped** to `[0.3, 2.0]` — prevents NV from absorbing MEL
+- **MEL recall target reduced** to 80% (85% was too aggressive)
+- **Clinical weights updated:** MEL=2.5, SCC=3.0
+
+#### v3 Results
+
+| Metric | Baseline | v3 DiffEvo | + MEL Safety |
+|--------|----------|-----------|--------------|
+| **Macro-F1** | 0.5938 | **0.6155** | 0.5868 |
+| **SCC recall** | 0.252 | **0.407** (+62%) | 0.350 |
+| **MEL recall** | 0.633 | 0.635 | **0.806** |
+| MEL to NV miss | 21.7% | 20.9% | **7.7%** |
+| SCC to BCC miss | 31.7% | 30.9% | 28.5% |
+| AK to BKL miss | 19.7% | **15.6%** | 14.5% |
+
+#### Deployed Configuration
+
+The production pipeline uses **both** v3 DiffEvo scales and MEL safety:
+
+```
+optimal_scales.npy          -- v3 Clinical-Weighted DiffEvo scales
+mel_safety_threshold.npy    -- MEL raw probability threshold (0.265)
+optimal_temperature.npy     -- LBFGS-calibrated temperature (0.75)
+```
+
+At inference, if the raw (pre-scaling) MEL probability >= 0.265, the prediction is overridden to MEL regardless of the scaled argmax. This forces MEL recall to ~80% at the cost of precision (0.64 to 0.44). The tradeoff is clinically appropriate — **flagging a false positive is preferable to missing a melanoma.**
+
+Disable with `--no-mel-safety` when precision matters more (e.g., batch screening).
+
+---
+
+
+
 ## Citation
 
 If you use this code, please cite:
