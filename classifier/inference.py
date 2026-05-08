@@ -315,44 +315,55 @@ def _make_heatmap_overlay(image_np, cam, colormap=cv2.COLORMAP_JET, alpha=0.5):
 # ===================================================================
 
 def _extract_swin_attention(model, image):
-    """Extract attention weights from Swin transformer layers."""
+    """Gradient-based spatial attribution for the Swin branch.
+
+    SwinV2 uses windowed attention, which makes global attention rollout
+    infeasible.  Instead we hook the last feature map before pooling and
+    compute gradient × activation (Grad-AM) with respect to the predicted
+    class.  This produces a clean spatial heatmap that highlights the
+    regions the Swin branch relies on most.
+    """
     if not hasattr(model, 'swin'):
         return None
 
-    attn_weights = []
+    feature_map = {}
 
-    def _hook(module, inp, out):
-        if hasattr(module, 'attn_drop'):
-            with torch.no_grad():
-                q, k = inp[0], inp[0]
-                B, N, C = q.shape
-                num_heads = getattr(module, 'num_heads', 1)
-                scale = (C // num_heads) ** -0.5
-                attn = (q @ k.transpose(-2, -1)) * scale
-                attn = attn.softmax(dim=-1)
-                attn_weights.append(attn.cpu().numpy())
+    def _fwd_hook(module, inp, out):
+        out.retain_grad()
+        feature_map['feat'] = out
 
-    hooks = []
-    for name, module in model.swin.named_modules():
-        if 'attn' in name.lower() and hasattr(module, 'qkv'):
-            hooks.append(module.register_forward_hook(_hook))
+    # Hook the norm layer right before the global average pool
+    hook = model.swin.norm.register_forward_hook(_fwd_hook)
 
-    with torch.no_grad():
-        model.swin(image)
+    # Need gradients for this pass
+    img = image.clone().requires_grad_(True)
+    with torch.enable_grad():
+        logits = model.swin(img)
+        pred_idx = logits.argmax(dim=1).item()
+        score = logits[0, pred_idx]
+        model.swin.zero_grad()
+        score.backward()
 
-    for h in hooks:
-        h.remove()
+    hook.remove()
 
-    if not attn_weights:
+    feat = feature_map.get('feat')
+    if feat is None:
         return None
 
-    last_attn = attn_weights[-1]
-    attn_map  = last_attn.mean(axis=(0, 1))
-    side = int(np.sqrt(attn_map.shape[0]))
-    if side * side == attn_map.shape[0]:
-        spatial = attn_map.mean(axis=-1).reshape(side, side)
-    else:
-        spatial = attn_map.mean(axis=-1)[:side * side].reshape(side, side)
+    # feat shape: [1, H, W, C] for SwinV2 (spatial, channels last)
+    grad = feat.grad[0]      # [H, W, C] or [N, C]
+    act  = feat.detach()[0]
+
+    # Grad-AM: element-wise gradient × activation, summed over channels
+    spatial = (grad * act).sum(dim=-1)    # [H, W] or [N]
+    spatial = F.relu(spatial)             # keep positive attributions
+    spatial = spatial.cpu().numpy()
+
+    # Handle both [H, W] (4D norm output) and [N] (3D flattened) cases
+    if spatial.ndim == 1:
+        side = int(np.sqrt(spatial.shape[0]))
+        spatial = spatial[:side * side].reshape(side, side)
+
     spatial = (spatial - spatial.min()) / (spatial.max() - spatial.min() + 1e-8)
     return spatial
 
