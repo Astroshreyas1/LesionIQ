@@ -405,7 +405,9 @@ Entering `NA` for any field uses population defaults (age=0.5 normalized, sex=un
   "model": {
     "mode": "full",
     "temperature": 0.75,
-    "thresholds_applied": true
+    "thresholds_applied": true,
+    "mel_safety_threshold": 0.265,
+    "mel_safety_triggered": true
   },
   "prediction": {
     "class": "MEL",
@@ -461,6 +463,7 @@ The SLM receives `original.png` + `gradcam.png` + `diagnosis.json` → generates
 | `--site` | interactive | Anatomical site (e.g. `head/neck`) or `NA` |
 | `--no-scales` | off | Disable DiffEvo threshold scaling |
 | `--no-temperature` | off | Disable temperature scaling |
+| `--no-mel-safety` | off | Disable MEL recall safety override |
 | `--interactive` | auto | Force interactive metadata prompts |
 
 > **Requirements:** `torch`, `torchvision`, `timm`, `albumentations`, `pillow`, `numpy`, `opencv-python`. VRAM: ~5 GB.

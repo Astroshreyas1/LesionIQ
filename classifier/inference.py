@@ -413,7 +413,7 @@ def _compute_shap_values(model, image_tensor, meta_tensor):
 
 
 def diagnose_image(model, image_path, meta_tensor, scales, temperature,
-                   output_dir, raw_meta):
+                   output_dir, raw_meta, mel_threshold=None):
     """Run the full 5-stage pipeline on a single image.
 
     Produces: original.png, gradcam.png, attention.png, diagnosis.json
@@ -433,9 +433,21 @@ def diagnose_image(model, image_path, meta_tensor, scales, temperature,
 
     # -- Classify (TTA + temperature + DiffEvo) --
     probs   = predict(model, img_tensor, meta_tensor, temperature, scales)
+
+    # MEL safety override: if raw MEL prob exceeds threshold, force MEL
+    mel_safety_applied = False
+    if mel_threshold is not None:
+        raw_mel_prob = float(probs[CLASS_NAMES.index('MEL')])
+        if raw_mel_prob >= mel_threshold:
+            mel_safety_applied = True
+
     ranked  = np.argsort(probs)[::-1]
-    pred_cls  = CLASS_NAMES[ranked[0]]
-    pred_conf = float(probs[ranked[0]])
+    if mel_safety_applied:
+        pred_cls = 'MEL'
+        pred_conf = float(probs[CLASS_NAMES.index('MEL')])
+    else:
+        pred_cls  = CLASS_NAMES[ranked[0]]
+        pred_conf = float(probs[ranked[0]])
     is_mal    = pred_cls in MALIGNANT
 
     # -- Grad-CAM++ --
@@ -479,6 +491,8 @@ def diagnose_image(model, image_path, meta_tensor, scales, temperature,
             "mode": model.mode,
             "temperature": round(temperature, 4),
             "thresholds_applied": scales is not None,
+            "mel_safety_threshold": round(mel_threshold, 3) if mel_threshold else None,
+            "mel_safety_triggered": mel_safety_applied,
         },
         "prediction": {
             "class": pred_cls,
@@ -557,6 +571,8 @@ def main():
                         help="Disable DiffEvo threshold scaling")
     parser.add_argument("--no-temperature", action="store_true",
                         help="Disable temperature scaling")
+    parser.add_argument("--no-mel-safety",  action="store_true",
+                        help="Disable MEL recall safety threshold")
     parser.add_argument("--interactive",    action="store_true",
                         help="Force interactive metadata prompts")
 
@@ -580,6 +596,14 @@ def main():
         if temp_path.exists():
             temperature = float(np.load(str(temp_path)))
             print(f"[OK] Temperature scaling: T={temperature:.4f}")
+
+    # ── Load MEL safety threshold ──
+    mel_threshold = None
+    if not args.no_mel_safety:
+        mel_path = CKPT_DIR / "mel_safety_threshold.npy"
+        if mel_path.exists():
+            mel_threshold = float(np.load(str(mel_path)))
+            print(f"[OK] MEL safety threshold: {mel_threshold:.3f}")
 
     # ── Metadata ──
     # Determine if we need interactive prompts:
@@ -640,7 +664,7 @@ def main():
         try:
             result = diagnose_image(
                 model, img_path, meta_tensor, scales, temperature,
-                args.output_dir, raw_meta)
+                args.output_dir, raw_meta, mel_threshold)
             all_results.append(result)
         except Exception as e:
             print(f"  [ERROR] {Path(img_path).name}: {e}")
