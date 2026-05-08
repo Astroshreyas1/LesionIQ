@@ -352,6 +352,27 @@ Method:  LBFGS optimization of temperature parameter on validation NLL.
 Expected impact: Calibration improvement, minimal F1 change.
 
 
+--- POST 4: Advanced Threshold Optimization (boost_f1_v3.py) --------------------
+Reason:  Initial Nelder-Mead optimization (POST 1) improved overall F1 but ignored
+         clinical severity. It boosted harmless BCCs while missing dangerous SCCs.
+Method:  Differential Evolution (DiffEvo) with clinical-aware weighting:
+           - BCC scaling capped at [0.3, 3.0] to suppress over-prediction.
+           - SCC scaling boosted heavily [2.0, 7.0] to catch difficult cases.
+           - Clinical weighting applied to DiffEvo objective (MEL w=2.5, SCC w=3.0).
+           - MEL Safety Override: Hard threshold added (raw prob > 0.265 = MEL)
+             to guarantee >80% recall for melanoma regardless of argmax.
+Expected impact: Macro-F1 +0.0217 on validation. SCC recall +62%. MEL->NV
+                 confusion reduced from 21.7% to 7.7% (with safety override).
+
+--- POST 5: SWA Metadata Recovery (fix_swa.py) --------------------------------
+Reason:  Standard PyTorch SWA (Change 11) `update_bn` crashes on models that
+         require multiple inputs (image + metadata) because it assumes a single
+         image tensor.
+Method:  Custom SWA batch norm recovery script (`fix_swa.py`) that properly
+         unpacks `(image, metadata, label)` batches and forwards them to the
+         model during the BN statistics accumulation phase.
+
+
 ================================================================================
  FUTURE OPTIMIZATIONS (not yet applied)
 ================================================================================
