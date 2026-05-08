@@ -49,6 +49,7 @@ LesionIQ/
 │   ├── inference.py         # Standalone inference CLI (no training deps needed)
 │   ├── boost_f1.py          # Differential Evolution threshold optimizer
 │   ├── boost_f1_v2.py       # Clinical-aware DiffEvo + MEL safety + confusion analysis
+│   ├── boost_f1_v3.py       # Confusion matrix reframe: BCC suppress + SCC boost + MEL safety
 │   ├── fix_swa.py           # Standalone SWA BN recovery utility
 │   ├── run_ablation.py      # Automated 4-experiment ablation runner
 │   └── train_classifier.py  # CLI entry point
