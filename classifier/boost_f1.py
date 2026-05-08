@@ -1,12 +1,18 @@
 """
-LesionIQ -- Aggressive Threshold Tuning
-=========================================
+LesionIQ -- Aggressive Threshold Tuning (v1)
+==============================================
 Multiple approaches to push macro-F1 above 0.60:
   1. Differential Evolution (global optimizer, not local like Nelder-Mead)
   2. Greedy per-class grid search (optimize one class at a time)
   3. K-fold cross-validated thresholds
 
 Runs on both single-model and ensemble probabilities.
+
+Version History:
+  v1 (this file): Symmetric bounds [0.3, 4.0] for all classes. DiffEvo won.
+  v2 (boost_f1_v2.py): Asymmetric AK/SCC bounds, clinical-weighted F1, MEL safety.
+  v3 (boost_f1_v3.py): Confusion matrix reframe — BCC suppress, SCC boost, MEL 80%.
+  -> v3 is the current production version.
 
 Usage:
   python boost_f1.py

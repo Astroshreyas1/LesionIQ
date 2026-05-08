@@ -9,6 +9,12 @@ Changes from v1:
   - Confusion matrix: AK<->SCC misclassification analysis
   - Clinical-aware scoring: penalizes MEL/SCC misses more
 
+Version History:
+  v1 (boost_f1.py): Symmetric bounds [0.3, 4.0] for all classes.
+  v2 (this file): Asymmetric AK/SCC bounds, clinical-weighted F1, MEL safety.
+  v3 (boost_f1_v3.py): Confusion matrix reframe — BCC suppress, SCC boost, MEL 80%.
+  -> v3 is the current production version.
+
 Usage:
   python boost_f1_v2.py
 """

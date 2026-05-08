@@ -84,7 +84,20 @@ class LesionIQHybrid(nn.Module):
         if self.mode in ('swin_only', 'image_only', 'full'):
             features.append(self.swin(img))
 
-        if self.mode == 'full' and meta is not None:
+        if self.mode == 'full':
+            if meta is None:
+                raise ValueError(
+                    "full mode requires metadata tensor (13-d). "
+                    "Got meta=None. Use mode='image_only' if metadata "
+                    "is unavailable, or pass a zero tensor as fallback."
+                )
             features.append(self.meta_mlp(meta))
+        elif meta is not None:
+            import warnings
+            warnings.warn(
+                f"Metadata tensor passed to '{self.mode}' mode — "
+                f"metadata is only used in 'full' mode. Ignoring.",
+                stacklevel=2,
+            )
 
         return self.classifier(torch.cat(features, dim=1))

@@ -15,6 +15,12 @@ Changes from v2:
   - Clinical weights: SCC 2.5→3.0, MEL 2.0→2.5
   - Full before/after confusion matrix with SCC→BCC tracking
 
+Version History:
+  v1 (boost_f1.py): Symmetric bounds [0.3, 4.0] for all classes.
+  v2 (boost_f1_v2.py): Asymmetric AK/SCC bounds, clinical-weighted F1, MEL safety.
+  v3 (this file): Confusion matrix reframe -- BCC suppress, SCC boost, MEL 80%.
+  -> v3 is the current production version.
+
 Usage:
   python classifier/boost_f1_v3.py
 """
