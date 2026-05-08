@@ -46,10 +46,15 @@ LesionIQ/
 │   ├── evaluate.py          # Test-set evaluation suite
 │   ├── explainability.py    # Grad-CAM++, SHAP, attention maps, calibration
 │   ├── post_training.py     # Threshold tuning, ensembling, temperature scaling
+│   ├── inference.py         # Standalone inference CLI (no training deps needed)
+│   ├── boost_f1.py          # Differential Evolution threshold optimizer
+│   ├── boost_f1_v2.py       # Clinical-aware DiffEvo + MEL safety + confusion analysis
+│   ├── fix_swa.py           # Standalone SWA BN recovery utility
 │   ├── run_ablation.py      # Automated 4-experiment ablation runner
 │   └── train_classifier.py  # CLI entry point
 │
 ├── preprocessing/           # Image preprocessing & cleanup
+│   ├── __init__.py                  # Public API: run_pipeline() for inference
 │   ├── dull_razor.py                # Hair removal using morphological operations
 │   ├── shades_of_grey.py            # Color normalization
 │   ├── apply_clahe.py               # Contrast enhancement (LAB color space)
@@ -65,11 +70,20 @@ LesionIQ/
 │       └── train_stylegan2ada.py    # StyleGAN2-ADA training wrapper
 │
 ├── data/                    # Data preparation utilities
+│   ├── layer0_train.csv     # Training manifest (22,746 images + metadata)
+│   ├── layer0_val.csv       # Validation manifest (4,993 images)
+│   ├── layer0_test.csv      # Test manifest (8,238 images)
 │   ├── training.py          # LesionIQ dataset class (standalone)
 │   ├── jitter_metadata.py   # Gaussian jitter for metadata augmentation
 │   └── update_lesioniq_metadata.py  # Metadata CSV processing
 │
 ├── checkpoints/             # Trained model weights (.pt files)
+│   ├── best_full.pt         # Full hybrid model (F1=0.5924)
+│   ├── best_image_only.pt   # Dual-backbone, no metadata (F1=0.5646)
+│   ├── best_effnet_only.pt  # EfficientNet-B4 only (F1=0.5392)
+│   ├── best_full_swa.pt     # SWA-averaged full model
+│   ├── optimal_scales.npy   # Clinical DiffEvo threshold scales
+│   └── optimal_temperature.npy  # Calibrated temperature
 │
 ├── docs/
 │   └── fine_tuning_log.txt  # Complete hyperparameter changelog
@@ -97,11 +111,12 @@ LesionIQ/
 - **4-Model Ensemble** — simple average + optimized weighted average
 - **Temperature Scaling** — LBFGS-optimized calibration for clinical confidence scores
 
-### Clinical Explainability (Work in Progress)
+### Clinical Explainability
 - **EfficientNet Branch**: Grad-CAM++ heatmaps for CNN feature visualization.
-- **SwinV2 Branch**: Grad-based attention weights for transformer patch attribution.
-- **Metadata Branch (MLP)**: SHAP DeepExplainer for tabular feature importance.
-- **Final Output Generation**: Outputs from all explainability methods are fed into a Small Language Model (SLM) to generate a cohesive, human-readable clinical explanation.
+- **SwinV2 Branch**: Attention rollout visualisations for transformer patch attribution.
+- **Metadata Branch (MLP)**: Perturbation-based feature attribution for tabular feature importance.
+- **Temperature Scaling**: Logits are divided by calibrated temperature (T=0.75) before softmax for improved confidence calibration.
+- **Final Output Generation**: Visual explainability artifacts (Grad-CAM++ overlays, Swin attention maps) and structured feature data (SHAP values, confidence scores, metadata) are packaged into a diagnostic bundle (`diagnosis.json` + images) and fed into Gemma 3 4B-IT (served locally via Ollama) to generate image-aware, clinically grounded explanations. Deterministic post-validation catches hallucinated claims against source evidence.
 
 ### Frontend UI (Work in Progress)
 - A web-based clinical dashboard is currently under development to serve the model predictions and SLM explanations to end-users.
@@ -110,17 +125,45 @@ LesionIQ/
 
 ## 📈 Results
 
-*Full results pending — model training in progress.*
+### Ablation Study
 
-| Mode | Val AUC | Val F1 (raw) | Val F1 (tuned) | Val Acc |
-|------|---------|--------------|----------------|---------|
-| `effnet_only` | — | — | — | — |
-| `swin_only` | — | — | — | — |
-| `image_only` | — | — | — | — |
-| `full` | — | — | — | — |
-| **Ensemble** | — | — | — | — |
+| Mode | Val F1 (macro) | Val AUC | Val Acc | Notes |
+|------|----------------|---------|---------|-------|
+| `effnet_only` | 0.5392 | — | — | EfficientNet-B4 backbone only |
+| `image_only` | 0.5646 | — | — | EfficientNet-B4 + Swin-Base (no metadata) |
+| `full` | 0.5924 | 0.9330 | 0.7503 | Both backbones + metadata MLP |
+| `full` + DiffEvo | 0.6066 | 0.9330 | 0.7613 | + Differential Evolution thresholds |
+| **3-Model Ensemble + Clinical DiffEvo** | **0.6165** | **0.9404** | **0.7571** | Best overall configuration |
 
-> Evaluated on held-out ISIC 2019 test set. "Tuned" F1 uses per-class Nelder-Mead threshold optimization strictly learned on the validation split (with 80/20 overfit protection) and then applied blindly to the test set to prevent data leakage.
+### Per-Class Breakdown (Ensemble + Clinical DiffEvo)
+
+| Class | Precision | Recall | F1 | Support | Clinical Notes |
+|-------|-----------|--------|------|---------|----------------|
+| MEL | 0.6385 | 0.6349 | 0.6367 | 882 | 21% misclassified as NV |
+| NV | 0.8973 | 0.8670 | 0.8819 | 2571 | Dominant class, well-separated |
+| BCC | 0.6597 | 0.8198 | 0.7311 | 655 | High recall, absorbs SCC misses |
+| AK | 0.4459 | 0.3815 | 0.4112 | 173 | 20% confused with BKL |
+| BKL | 0.6206 | 0.5683 | 0.5933 | 498 | — |
+| DF | 0.4667 | 0.4884 | 0.4773 | 43 | Small sample, volatile |
+| VASC | 0.9444 | 0.7083 | 0.8095 | 48 | Highest precision |
+| SCC | 0.3759 | 0.4065 | 0.3906 | 123 | **31% confused with BCC** |
+
+### Confusion Matrix Insights
+
+The dominant misclassification patterns are **not** AK↔SCC as initially hypothesized, but rather:
+- **SCC → BCC (31%)**: The largest SCC failure mode. Both are keratinocyte-origin lesions with overlapping morphology.
+- **MEL → NV (22%)**: Melanocytic lesion confusion — the classic dermoscopy challenge.
+- **AK → BKL (20%)**: AK misclassified as benign keratosis.
+- **AK ↔ SCC (10-14%)**: Bidirectional confusion, but secondary to BCC/BKL confusion.
+
+### Post-Training Optimization
+
+- **Threshold tuning**: Clinical-aware Differential Evolution (asymmetric bounds for AK/SCC [1.5, 6.0]) boosts Macro-F1 from 0.5938 → **0.6165** (+0.0227).
+- **MEL recall safety**: Forcing MEL recall ≥ 85% costs -0.04 macro-F1 (precision drops to 0.40). Discarded in favor of maintaining overall F1 > 0.60.
+- **Temperature scaling**: Optimal T=0.75 (NLL 0.7761 → 0.7432). Improves confidence calibration.
+- **Ensemble**: 3-model average (effnet_only + image_only + full) boosts AUC from 0.9330 → 0.9404.
+
+> Evaluated on held-out ISIC 2019 validation set (4,993 images). The clinical-aware optimizer uses weighted per-class F1 (MEL=2.0, SCC=2.5, NV=0.5) to prioritize malignancy detection.
 
 ---
 
@@ -145,9 +188,17 @@ python classifier/run_ablation.py
 python classifier/train_classifier.py --mode full
 ```
 
+### SWA Recovery
+If SWA batch norm update fails (e.g., metadata shape mismatch), re-run without retraining:
+```bash
+python classifier/train_classifier.py --fix-swa --checkpoint checkpoints/best_full.pt
+```
+
+> **Note**: PyTorch's built-in `update_bn` discards metadata inputs, causing a shape mismatch in `full` mode (2816 vs 2848 features). The custom BN update loop in `train.py` passes both images and metadata correctly.
+
 ### Post-Training Optimization
 ```bash
-# After all 4 checkpoints are saved:
+# Works with 2+ checkpoints (skips missing ones gracefully):
 python classifier/post_training.py
 ```
 
@@ -223,11 +274,196 @@ For rare classes (DF, VASC, AK, SCC), we generate high-fidelity synthetic dermos
 
 ## Hardware Requirements
 
-- **GPU:** NVIDIA RTX A6000 (48GB) recommended
-- **VRAM (training):** ~20 GB minimum (AMP enabled, batch size 16, 384×384)
-- **VRAM (inference):** ~5 GB (suitable for RTX 3080/4070 and above)
-- **Storage:** ~50 GB for dataset + checkpoints
-- **Training time:** ~20 min/epoch for `image_only` mode, ~11 min/epoch for single-backbone modes
+| | Training | Inference / Post-Training |
+|---|---|---|
+| **GPU** | RTX A6000 (48 GB) or RTX 5070 Ti (16 GB) | Any GPU with ≥ 8 GB VRAM |
+| **VRAM** | ~20 GB (AMP, batch 16, 384×384) | ~5 GB |
+| **Batch size** | 16 (A6000) / 8 (5070 Ti, reduce in config.py) | 16 |
+| **Storage** | ~50 GB (dataset + checkpoints) | ~2.5 GB (checkpoints only) |
+| **Epoch time** | ~20 min (`image_only`), ~11 min (single backbone) | — |
+
+> **5070 Ti note:** 16 GB VRAM is sufficient for training with `BATCH_SIZE=8` and `GRAD_ACCUM_STEPS=6` (effective batch = 48). For inference and post-training optimization, batch size 16 works fine.
+
+---
+
+## Machine Transfer
+
+To move the pipeline to a new machine:
+
+### 1. Copy the bundle
+```bash
+# The LesionIQ_bundle.zip contains:
+#   - All source code (classifier/, preprocessing/, synthetic/, data/)
+#   - Trained checkpoints (~2.4 GB)
+#   - Data CSVs (layer0_train/val/test.csv)
+#   - requirements.txt
+```
+
+### 2. Install dependencies
+```bash
+python -m venv venv
+venv\Scripts\activate        # Windows
+pip install -r requirements.txt
+```
+
+### 3. Update paths
+Edit `classifier/dataloader.py` lines 20-22:
+```python
+TRAIN_CSV = r"<your_path>\data\layer0_train.csv"
+VAL_CSV   = r"<your_path>\data\layer0_val.csv"
+TEST_CSV  = r"<your_path>\data\layer0_test.csv"
+```
+
+Then fix `image_path` column in each CSV to point to the actual image directory on the new machine:
+```python
+import pandas as pd
+for csv in ['layer0_train.csv', 'layer0_val.csv', 'layer0_test.csv']:
+    df = pd.read_csv(csv)
+    df['image_path'] = df['image_path'].str.replace(
+        r'C:\Users\Admin\Desktop\StyleGAN\output',
+        r'<your_image_dir>', regex=False
+    )
+    df.to_csv(csv, index=False)
+```
+
+### 4. For 5070 Ti (16 GB VRAM)
+In `classifier/config.py`:
+```python
+BATCH_SIZE = 8           # halved from 16
+GRAD_ACCUM_STEPS = 6     # doubled from 3 (effective batch stays 48)
+NUM_WORKERS = 4          # adjust to CPU core count
+```
+
+---
+
+## Inference
+
+A standalone 5-stage pipeline that classifies dermoscopy images and produces explainability artifacts for SLM-based clinical report generation. No training dependencies required.
+
+```
+Input Image + Metadata → Preprocessing → Classifier (4-way TTA) → Explainability → SLM Output Bundle
+```
+
+Each image produces a diagnostic bundle:
+```
+output/inference/<image_name>/
+├── original.png        # Preprocessed input (384×384)
+├── gradcam.png         # Grad-CAM++ heatmap overlay (EfficientNet-B4)
+├── attention.png       # Swin Transformer attention rollout
+└── diagnosis.json      # Probabilities, SHAP, clinical flags, model info
+```
+
+### Usage
+```bash
+# Interactive mode — prompts for age, sex, site (with NA option)
+python classifier/inference.py --image lesion.png
+
+# Explicit metadata
+python classifier/inference.py --image lesion.png --age 65 --sex male --site "head/neck"
+
+# NA metadata (uses population defaults: age=50, sex=unknown, site=unknown)
+python classifier/inference.py --image lesion.png --age NA --sex NA --site NA
+
+# Batch (entire directory, no interactive prompts)
+python classifier/inference.py --dir path/to/images/ --output-dir ./results
+
+# Lighter model (no Swin, no attention map output)
+python classifier/inference.py --image lesion.png --mode effnet_only
+
+# Disable post-training optimizations
+python classifier/inference.py --image lesion.png --no-temperature --no-scales
+```
+
+### Interactive Metadata Input
+
+When running on a single image without `--age`/`--sex`/`--site` flags, the pipeline prompts for each field interactively:
+
+```
+╔══════════════════════════════════════╗
+║        Patient Metadata Input        ║
+╚══════════════════════════════════════╝
+
+  Age (years, or NA): 65
+  Sex (male / female / NA): male
+
+  Anatomical site:
+    1. anterior torso    2. head/neck
+    3. lateral torso     4. lower extremity
+    5. oral/genital      6. palms/soles
+    7. posterior torso   8. upper extremity
+    9. NA (unknown)
+  Select [1-9]: 2
+```
+
+Entering `NA` for any field uses population defaults (age=0.5 normalized, sex=unknown, site=unknown).
+
+### diagnosis.json (SLM input)
+```json
+{
+  "version": "1.0",
+  "image": "ISIC_0024306.png",
+  "model": {
+    "mode": "full",
+    "temperature": 0.75,
+    "thresholds_applied": true
+  },
+  "prediction": {
+    "class": "MEL",
+    "class_full": "Melanoma",
+    "confidence": 0.7321,
+    "is_malignant": true
+  },
+  "probabilities": {
+    "MEL": 0.7321, "NV": 0.1215, "BCC": 0.0534,
+    "AK": 0.0312, "BKL": 0.0841, "DF": 0.0021,
+    "VASC": 0.0010, "SCC": 0.0246
+  },
+  "top3": [
+    {"class": "MEL", "full_name": "Melanoma", "probability": 0.7321, "is_malignant": true},
+    {"class": "NV",  "full_name": "Melanocytic Nevus", "probability": 0.1215, "is_malignant": false},
+    {"class": "BKL", "full_name": "Benign Keratosis", "probability": 0.0841, "is_malignant": false}
+  ],
+  "clinical_flags": {
+    "malignant_total_prob": 0.7892,
+    "requires_biopsy": true,
+    "low_confidence": false,
+    "differential_diagnosis": false
+  },
+  "explainability": {
+    "gradcam": "gradcam.png",
+    "attention": "attention.png",
+    "shap_metadata": {
+      "age_approx": 0.0234,
+      "sex_male": 0.0012,
+      "site_head/neck": 0.0089
+    }
+  },
+  "metadata_input": {
+    "age": 65,
+    "sex": "male",
+    "site": "head/neck"
+  }
+}
+```
+
+The SLM receives `original.png` + `gradcam.png` + `diagnosis.json` → generates the clinical narrative.
+
+### CLI options
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--image` | — | Path to a single image |
+| `--dir` | — | Path to directory of images |
+| `--mode` | `full` | `full`, `image_only`, `swin_only`, or `effnet_only` |
+| `--checkpoint` | auto | Custom checkpoint path |
+| `--output-dir` | `./output/inference` | Where to save diagnostic bundles |
+| `--age` | interactive | Patient age (number or `NA`) |
+| `--sex` | interactive | `male`, `female`, `unknown`, or `NA` |
+| `--site` | interactive | Anatomical site (e.g. `head/neck`) or `NA` |
+| `--no-scales` | off | Disable DiffEvo threshold scaling |
+| `--no-temperature` | off | Disable temperature scaling |
+| `--interactive` | auto | Force interactive metadata prompts |
+
+> **Requirements:** `torch`, `torchvision`, `timm`, `albumentations`, `pillow`, `numpy`, `opencv-python`. VRAM: ~5 GB.
 
 ---
 
@@ -257,7 +493,7 @@ This project is released under the [MIT License](LICENSE).
 - **External validation:** Not yet validated on external dermoscopy datasets (ISIC 2020, HAM10000, PH²)
 - **Synthetic data:** StyleGAN2-ADA augmentation has not been independently validated for clinical utility
 - **Decision support only:** This is a clinical decision-support tool — **not a diagnostic replacement.** All predictions require review by a qualified dermatologist
-- **SLM Hallucination Risk:** Using a Small Language Model to translate feature attributions (Grad-CAM, SHAP) into clinical text carries inherent risk. If a heatmap highlights an artifact, the SLM may hallucinate a plausible but clinically false rationale. Explainability outputs must always be audited alongside the source images.
+- **SLM Hallucination Risk:** Using a multimodal Small Language Model to translate visual explainability artifacts (Grad-CAM++ overlays, attention maps) and structured feature attributions (SHAP values) into clinical text carries inherent risk. If a heatmap highlights an artifact, the SLM may hallucinate a plausible but clinically false rationale. Constrained decoding, structured I/O schemas, and deterministic post-validation are used to mitigate this, but explainability outputs must always be audited by a qualified dermatologist.
 - **Privacy-preserving design:** Processes de-identified images only. No PII stored or transmitted. Suitable for HIPAA-aligned research workflows — formal compliance requires institutional review.
 
 ---

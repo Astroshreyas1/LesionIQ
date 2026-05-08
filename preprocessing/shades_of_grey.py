@@ -67,9 +67,9 @@ def process_sog_batch(input_folder, output_folder, power=4):
             print(f"  ✗ {name}: {err}")
 
 
-# ── PATHS ─────────────────────────────────────────────────────────────────────
-INPUT_DIR  = r"path/to/processed"
-OUTPUT_DIR = r"path/to/shades_of_grey"
-# ─────────────────────────────────────────────────────────────────────────────
-
-process_sog_batch(INPUT_DIR, OUTPUT_DIR, power=4)
+if __name__ == "__main__":
+    # ── PATHS ─────────────────────────────────────────────────────────────────────
+    INPUT_DIR  = r"path/to/processed"
+    OUTPUT_DIR = r"path/to/shades_of_grey"
+    # ─────────────────────────────────────────────────────────────────────────────
+    process_sog_batch(INPUT_DIR, OUTPUT_DIR, power=4)

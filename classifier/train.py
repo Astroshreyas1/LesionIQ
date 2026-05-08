@@ -405,7 +405,27 @@ def train(
     # SWA: update batch norm stats and save SWA checkpoint
     if swa_active:
         print("\n  Updating SWA batch normalization statistics...")
-        torch.optim.swa_utils.update_bn(train_loader, swa_model, device=device)
+        # Custom BN update — PyTorch's update_bn only passes images (input[0]),
+        # discarding metadata. In 'full' mode this causes a shape mismatch
+        # (2816 vs 2848) because the metadata branch is skipped.
+        swa_model.train()
+        momenta = {}
+        for module in swa_model.modules():
+            if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+                module.running_mean = torch.zeros_like(module.running_mean)
+                module.running_var = torch.ones_like(module.running_var)
+                momenta[module] = module.momentum
+                module.momentum = None
+                module.num_batches_tracked *= 0
+
+        with torch.no_grad():
+            for images, meta, labels in train_loader:
+                images = images.to(device, non_blocking=True)
+                meta = meta.to(device, non_blocking=True)
+                swa_model(images, meta)
+
+        for module, momentum in momenta.items():
+            module.momentum = momentum
         swa_path = str(ckpt_dir / "best_model_swa.pt")
         
         # Evaluate SWA model

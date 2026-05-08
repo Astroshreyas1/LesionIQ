@@ -1,5 +1,5 @@
 """
-LesionIQ — Post-Training Optimization Suite
+LesionIQ -- Post-Training Optimization Suite
 =============================================
 Run AFTER all 4 ablation experiments finish.
 
@@ -28,9 +28,9 @@ CKPT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
 MODES = ["effnet_only", "swin_only", "image_only", "full"]
 
 
-# ═══════════════════════════════════════════════════════════════
+# =================================================================
 #  UTILITY: Load a model from checkpoint
-# ═══════════════════════════════════════════════════════════════
+# =================================================================
 
 def load_model(mode, checkpoint_name=None):
     """Load a trained model from its checkpoint."""
@@ -49,9 +49,9 @@ def load_model(mode, checkpoint_name=None):
     return model
 
 
-# ═══════════════════════════════════════════════════════════════
+# =================================================================
 #  UTILITY: Get all probabilities from a model on val set
-# ═══════════════════════════════════════════════════════════════
+# =================================================================
 
 @torch.no_grad()
 def get_all_probs(model, loader):
@@ -72,16 +72,17 @@ def get_all_probs(model, loader):
                       _fwd(torch.flip(images, dims=[2])) +
                       _fwd(torch.flip(images, dims=[2, 3]))) / 4.0
         
-        probs = torch.softmax(logits, dim=1).cpu().numpy()
+        # float32 before softmax -- AMP float16 softmax overflows
+        probs = torch.softmax(logits.float(), dim=1).cpu().numpy()
         all_probs.append(probs)
         all_labels.extend(labels.numpy())
     
     return np.concatenate(all_probs), np.array(all_labels)
 
 
-# ═══════════════════════════════════════════════════════════════
+# =================================================================
 #  1. PER-CLASS THRESHOLD TUNING
-# ═══════════════════════════════════════════════════════════════
+# =================================================================
 
 def optimize_thresholds(probs, labels, num_classes=NUM_CLASSES):
     """Find optimal per-class thresholds that maximize macro-F1.
@@ -148,18 +149,18 @@ def optimize_thresholds(probs, labels, num_classes=NUM_CLASSES):
     print(f"    Full val:  Macro-F1 = {tuned_f1_full:.4f}  (delta = {delta_full:+.4f})")
     
     # --- Diagnostic delta interpretation ---
-    print(f"\n  ╔══ DIAGNOSTIC ══════════════════════════════════════════╗")
-    print(f"  ║  Threshold gain (check set): {delta_check:+.4f}                   ║")
+    print(f"\n  +== DIAGNOSTIC ======================================+")
+    print(f"  |  Threshold gain (check set): {delta_check:+.4f}                   |")
     if delta_check < 0:
-        print(f"  ║  ⚠ NEGATIVE — Nelder-Mead OVERFIT the tune set.      ║")
-        print(f"  ║  Reverting to uniform thresholds (safe default).      ║")
+        print(f"  |  WARNING: Nelder-Mead OVERFIT the tune set.          |")
+        print(f"  |  Reverting to uniform thresholds (safe default).     |")
         best_scales = np.ones(num_classes)
     elif delta_check < 0.03:
-        print(f"  ║  Small gain — model already well-calibrated OR val    ║")
-        print(f"  ║  set too small. Using tuned scales cautiously.        ║")
+        print(f"  |  Small gain -- model already well-calibrated OR val  |")
+        print(f"  |  set too small. Using tuned scales cautiously.       |")
     elif delta_check > 0.15:
-        print(f"  ║  ⚠ SUSPICIOUSLY LARGE — possible Nelder-Mead overfit.║")
-        print(f"  ║  Falling back to conservative grid search.            ║")
+        print(f"  |  WARNING: Suspiciously large -- possible NM overfit. |")
+        print(f"  |  Falling back to conservative grid search.           |")
         # Fallback: simple grid search over [0.5, 1.0, 1.5, 2.0] per class
         best_grid_f1 = base_f1_check
         best_grid_scales = np.ones(num_classes)
@@ -172,10 +173,10 @@ def optimize_thresholds(probs, labels, num_classes=NUM_CLASSES):
                     best_grid_f1 = trial_f1
                     best_grid_scales = trial.copy()
         best_scales = best_grid_scales
-        print(f"  ║  Grid search check F1: {best_grid_f1:.4f}                    ║")
+        print(f"  |  Grid search check F1: {best_grid_f1:.4f}                   |")
     else:
-        print(f"  ║  ✓ Healthy gain. Scales are reliable.                 ║")
-    print(f"  ╚════════════════════════════════════════════════════════╝")
+        print(f"  |  OK: Healthy gain. Scales are reliable.              |")
+    print(f"  +====================================================+")
     
     # Final scales
     print(f"\n  Final scales per class:")
@@ -194,9 +195,9 @@ def optimize_thresholds(probs, labels, num_classes=NUM_CLASSES):
     return best_scales, final_f1
 
 
-# ═══════════════════════════════════════════════════════════════
+# =================================================================
 #  2. ENSEMBLE ALL 4 MODELS
-# ═══════════════════════════════════════════════════════════════
+# =================================================================
 
 def ensemble_predictions(val_loader):
     """Load all 4 ablation models and average their predictions."""
@@ -255,21 +256,16 @@ def ensemble_predictions(val_loader):
     return ensemble_probs, labels
 
 
-# ═══════════════════════════════════════════════════════════════
+# =================================================================
 #  3. TEMPERATURE SCALING (Calibration)
-# ═══════════════════════════════════════════════════════════════
-
-class TemperatureScaler(nn.Module):
-    """Learn a single temperature parameter to calibrate probabilities."""
-    def __init__(self):
-        super().__init__()
-        self.temperature = nn.Parameter(torch.ones(1) * 1.5)
-    
-    def forward(self, logits):
-        return logits / self.temperature
+# =================================================================
 
 def calibrate_temperature(model, val_loader):
-    """Find optimal temperature on validation set using NLL."""
+    """Find optimal temperature on validation set via grid search.
+    
+    Grid search is more robust than LBFGS for temperature scaling,
+    especially with float16 logits from AMP training.
+    """
     print("\n" + "="*60)
     print(" Temperature Scaling (Calibration)")
     print("="*60)
@@ -287,33 +283,32 @@ def calibrate_temperature(model, val_loader):
             all_logits.append(logits.cpu())
             all_labels.append(labels)
     
-    all_logits = torch.cat(all_logits)
+    all_logits = torch.cat(all_logits).float()  # float32 -- critical
     all_labels = torch.cat(all_labels)
     
     # Before calibration
     probs_before = F.softmax(all_logits, dim=1).numpy()
-    
-    # Optimize temperature
-    temp_scaler = TemperatureScaler()
-    optimizer = torch.optim.LBFGS([temp_scaler.temperature], lr=0.01, max_iter=100)
     nll = nn.CrossEntropyLoss()
+    nll_before = nll(all_logits, all_labels).item()
     
-    def closure():
-        optimizer.zero_grad()
-        loss = nll(temp_scaler(all_logits), all_labels)
-        loss.backward()
-        return loss
+    # Grid search over temperature values (more robust than LBFGS)
+    best_temp = 1.0
+    best_nll = nll_before
+    for t in np.arange(0.5, 5.01, 0.05):
+        trial_nll = nll(all_logits / t, all_labels).item()
+        if trial_nll < best_nll:
+            best_nll = trial_nll
+            best_temp = t
     
-    optimizer.step(closure)
-    
-    optimal_temp = temp_scaler.temperature.item()
+    optimal_temp = round(best_temp, 2)
     probs_after = F.softmax(all_logits / optimal_temp, dim=1).numpy()
     
     # Compare
     f1_before = f1_score(all_labels.numpy(), probs_before.argmax(1), average="macro")
     f1_after = f1_score(all_labels.numpy(), probs_after.argmax(1), average="macro")
     
-    print(f"\n  Optimal temperature: {optimal_temp:.4f}")
+    print(f"\n  Optimal temperature: {optimal_temp:.2f}")
+    print(f"  NLL: {nll_before:.4f} -> {best_nll:.4f}")
     print(f"  F1 before calibration: {f1_before:.4f}")
     print(f"  F1 after calibration:  {f1_after:.4f}")
     print(f"  Note: Temperature scaling primarily improves CALIBRATION")
@@ -322,9 +317,9 @@ def calibrate_temperature(model, val_loader):
     return optimal_temp
 
 
-# ═══════════════════════════════════════════════════════════════
+# =================================================================
 #  MAIN
-# ═══════════════════════════════════════════════════════════════
+# =================================================================
 
 if __name__ == "__main__":
     print("="*60)
@@ -345,6 +340,7 @@ if __name__ == "__main__":
         print(f"  Saved optimal scales -> {os.path.join(CKPT_DIR, 'optimal_scales.npy')}")
     except Exception as e:
         print(f"  Threshold tuning failed: {e}")
+        import traceback; traceback.print_exc()
     
     # --- 2. Ensemble ---
     try:
@@ -354,6 +350,7 @@ if __name__ == "__main__":
             scales, ensemble_tuned_f1 = optimize_thresholds(ensemble_probs, labels)
     except Exception as e:
         print(f"  Ensemble failed: {e}")
+        import traceback; traceback.print_exc()
     
     # --- 3. Temperature scaling ---
     try:
@@ -365,6 +362,7 @@ if __name__ == "__main__":
         print(f"  Saved temperature -> {os.path.join(CKPT_DIR, 'optimal_temperature.npy')}")
     except Exception as e:
         print(f"  Temperature scaling failed: {e}")
+        import traceback; traceback.print_exc()
     
     print("\n" + "="*60)
     print(" Post-Training Optimization Complete!")
