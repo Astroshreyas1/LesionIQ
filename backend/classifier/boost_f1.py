@@ -20,6 +20,7 @@ Usage:
 
 import os
 import sys
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -28,7 +29,11 @@ from sklearn.metrics import f1_score, roc_auc_score, classification_report
 from scipy.optimize import differential_evolution
 from sklearn.model_selection import StratifiedKFold
 
-sys.path.insert(0, r"C:\Users\Admin\Desktop\models")
+SCRIPT_DIR = Path(__file__).resolve().parent
+BACKEND_ROOT = SCRIPT_DIR.parent
+for path in (SCRIPT_DIR, BACKEND_ROOT):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 from config import DEVICE, NUM_CLASSES, USE_AMP, OUTPUT_DIR, BATCH_SIZE
 from models import LesionIQHybrid

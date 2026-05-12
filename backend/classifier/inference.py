@@ -5,19 +5,20 @@ LesionIQ -- Inference + Explainability Pipeline
 
 Each image produces a diagnostic bundle:
   output/<image_name>/
-    ├── original.png        # Preprocessed input (384×384)
+    ├── final_preprocessed.png  # Model input (384×384)
     ├── gradcam.png         # Grad-CAM++ heatmap overlay
     ├── attention.png       # Swin attention rollout overlay
     └── diagnosis.json      # Full diagnostic data for SLM
 
 Usage:
-  python classifier/inference.py --image lesion.png
-  python classifier/inference.py --image img.png --age 65 --sex male --site "head/neck"
-  python classifier/inference.py --image img.png --age NA --sex NA --site NA
-  python classifier/inference.py --dir path/to/images/ --output-dir ./results
+  python backend/inference.py --image lesion.png
+  python backend/inference.py --image img.png --age 65 --sex male --site "head/neck"
+  python backend/inference.py --image img.png --age NA --sex NA --site NA
+  python backend/inference.py --dir path/to/images/ --output-dir ./results
 """
 
 import os, sys, json, argparse
+from functools import lru_cache
 import cv2
 import numpy as np
 import torch
@@ -44,6 +45,10 @@ CLASS_FULL  = {
     "MEL": "Melanoma", "NV": "Melanocytic Nevus", "BCC": "Basal Cell Carcinoma",
     "AK": "Actinic Keratosis", "BKL": "Benign Keratosis", "DF": "Dermatofibroma",
     "VASC": "Vascular Lesion", "SCC": "Squamous Cell Carcinoma",
+}
+CLASS_THRESHOLDS = {
+    "MEL": 0.57, "NV": 0.48, "BCC": 0.42, "BKL": 0.39,
+    "AK": 0.31, "SCC": 0.35, "VASC": 0.22, "DF": 0.24,
 }
 MALIGNANT   = {"MEL", "BCC", "AK", "SCC"}
 IMG_SIZE    = 384
@@ -141,6 +146,105 @@ def encode_metadata(age=None, sex=None, site=None):
 # ===================================================================
 
 from preprocessing import run_pipeline as _run_preprocess_pipeline
+from preprocessing.dull_razor import dullrazor as _dullrazor
+from preprocessing.shades_of_grey import shades_of_gray as _shades_of_gray
+from preprocessing.apply_clahe import apply_clahe as _apply_clahe
+from preprocessing.remove_circular_border import has_circular_border as _has_circular_border
+from preprocessing.remove_circular_border import inscribed_square as _inscribed_square
+
+
+ARTIFACT_FILENAMES = {
+    "raw": "raw.png",
+    "dullrazor": "01_dullrazor.png",
+    "shadesofgrey": "02_shades_of_grey.png",
+    "clahe": "03_clahe.png",
+    "borderremoved": "04_border_removed.png",
+    "final_preprocessed": "final_preprocessed.png",
+    "original": "final_preprocessed.png",
+    "gradcam": "gradcam.png",
+    "attention": "attention.png",
+    "diagnosis": "diagnosis.json",
+}
+
+
+class PreprocessingArtifactError(RuntimeError):
+    """Raised when a required case artifact cannot be produced."""
+
+
+def _save_bgr(path, img_bgr):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if img_bgr is None:
+        raise PreprocessingArtifactError(f"Cannot save empty image artifact: {path.name}")
+    ok = cv2.imwrite(str(path), img_bgr)
+    if not ok:
+        raise PreprocessingArtifactError(f"Failed to write image artifact: {path}")
+    return str(path)
+
+
+def _require_image(stage, img_bgr):
+    if img_bgr is None:
+        raise PreprocessingArtifactError(f"Preprocessing stage failed: {stage}")
+    return img_bgr
+
+
+def run_preprocessing_artifacts(image_path, output_dir, target_size=IMG_SIZE):
+    """Run preprocessing and save every auditable layer used by the UI/API."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_bgr = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    if raw_bgr is None:
+        raise ValueError(f"Could not load image: {image_path}")
+    artifacts = {
+        "raw": _save_bgr(output_dir / ARTIFACT_FILENAMES["raw"], raw_bgr)
+    }
+
+    try:
+        dull_bgr, _ = _dullrazor(str(image_path))
+        dull_bgr = _require_image("DullRazor hair removal", dull_bgr)
+        artifacts["dullrazor"] = _save_bgr(
+            output_dir / ARTIFACT_FILENAMES["dullrazor"], dull_bgr)
+
+        sog_bgr = _require_image(
+            "Shades-of-Gray normalization", _shades_of_gray(dull_bgr, power=4))
+        artifacts["shadesofgrey"] = _save_bgr(
+            output_dir / ARTIFACT_FILENAMES["shadesofgrey"], sog_bgr)
+
+        clahe_input = output_dir / "_clahe_input.png"
+        _save_bgr(clahe_input, sog_bgr)
+        try:
+            clahe_bgr = _require_image(
+                "LAB CLAHE enhancement", _apply_clahe(str(clahe_input)))
+        finally:
+            clahe_input.unlink(missing_ok=True)
+        artifacts["clahe"] = _save_bgr(
+            output_dir / ARTIFACT_FILENAMES["clahe"], clahe_bgr)
+
+        border_bgr = clahe_bgr
+        circle = _has_circular_border(border_bgr)
+        if circle is not None:
+            cx, cy, radius = circle
+            h, w = border_bgr.shape[:2]
+            x1, y1, x2, y2 = _inscribed_square(cx, cy, radius, h, w)
+            border_bgr = border_bgr[y1:y2, x1:x2]
+
+        border_bgr = _require_image("Circular border removal", border_bgr)
+        border_bgr = cv2.resize(
+            border_bgr, (target_size, target_size), interpolation=cv2.INTER_LANCZOS4)
+        artifacts["borderremoved"] = _save_bgr(
+            output_dir / ARTIFACT_FILENAMES["borderremoved"], border_bgr)
+        final_path = _save_bgr(
+            output_dir / ARTIFACT_FILENAMES["final_preprocessed"], border_bgr)
+    except Exception as exc:
+        if isinstance(exc, PreprocessingArtifactError):
+            raise
+        raise PreprocessingArtifactError(str(exc)) from exc
+
+    artifacts["final_preprocessed"] = final_path
+    artifacts["original"] = final_path
+
+    return border_bgr, artifacts
 
 
 def preprocess_image(image_path):
@@ -211,10 +315,71 @@ def build_model(mode="full", checkpoint_path=None):
     if checkpoint_path is None:
         checkpoint_path = str(CKPT_DIR / f"best_{mode}.pt")
     ckpt = torch.load(checkpoint_path, map_location=DEVICE, weights_only=False)
-    model.load_state_dict(ckpt["model_state_dict"])
+    state_dict = ckpt.get("model_state_dict", ckpt.get("state_dict", ckpt))
+    state_dict = {
+        k.replace("module.", "", 1): v
+        for k, v in state_dict.items()
+        if hasattr(v, "shape")
+    }
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing or unexpected:
+        print(f"[WARN] Loaded checkpoint with relaxed key matching "
+              f"(missing={len(missing)}, unexpected={len(unexpected)})")
     model.eval()
     print(f"[OK] Model loaded: {mode} from {checkpoint_path}")
     return model
+
+
+MODE_ALIASES = {
+    "full": "full",
+    "full hybrid": "full",
+    "image_only": "image_only",
+    "image only": "image_only",
+    "effnet_only": "effnet_only",
+    "effnet only": "effnet_only",
+    "swin_only": "swin_only",
+    "swin only": "swin_only",
+}
+
+
+def normalize_mode(mode="full"):
+    """Normalize CLI/frontend mode labels into checkpoint mode names."""
+    key = str(mode or "full").strip().lower().replace("-", "_")
+    normalized = MODE_ALIASES.get(key)
+    if normalized is None:
+        raise ValueError(f"Unsupported inference mode: {mode}")
+    return normalized
+
+
+@lru_cache(maxsize=8)
+def _load_runtime(mode="full", checkpoint_path=None,
+                  use_scales=True, use_temperature=True, use_mel_safety=True):
+    """Load model and calibration assets once for API/server reuse."""
+    mode = normalize_mode(mode)
+    model = build_model(mode, checkpoint_path)
+
+    scales = None
+    if use_scales:
+        scales_path = CKPT_DIR / "optimal_scales.npy"
+        if scales_path.exists():
+            scales = np.load(str(scales_path))
+            print("[OK] DiffEvo threshold scales loaded")
+
+    temperature = 1.0
+    if use_temperature:
+        temp_path = CKPT_DIR / "optimal_temperature.npy"
+        if temp_path.exists():
+            temperature = float(np.load(str(temp_path)))
+            print(f"[OK] Temperature scaling: T={temperature:.4f}")
+
+    mel_threshold = None
+    if use_mel_safety:
+        mel_path = CKPT_DIR / "mel_safety_threshold.npy"
+        if mel_path.exists():
+            mel_threshold = float(np.load(str(mel_path)))
+            print(f"[OK] MEL safety threshold: {mel_threshold:.3f}")
+
+    return model, scales, temperature, mel_threshold
 
 
 # ===================================================================
@@ -308,6 +473,313 @@ def _make_heatmap_overlay(image_np, cam, colormap=cv2.COLORMAP_JET, alpha=0.5):
     heatmap = cv2.applyColorMap(np.uint8(255 * cam_resized), colormap)
     heatmap = heatmap[:, :, ::-1].astype(np.float32) / 255.0
     return np.clip(alpha * heatmap + (1 - alpha) * image_np, 0, 1)
+
+
+def _region_from_point(x_norm, y_norm):
+    if 0.34 <= x_norm <= 0.66 and 0.34 <= y_norm <= 0.66:
+        return "central lesion body"
+    vertical = "upper" if y_norm < 0.34 else "lower" if y_norm > 0.66 else "mid"
+    horizontal = "left" if x_norm < 0.34 else "right" if x_norm > 0.66 else "central"
+    if vertical == "mid":
+        return f"{horizontal} peripheral lesion border"
+    if horizontal == "central":
+        return f"{vertical} lesion border"
+    return f"{vertical}-{horizontal} lesion border"
+
+
+def _zone_family(region):
+    if not region:
+        return None
+    if "central" in region or "body" in region:
+        return "central"
+    if "upper" in region:
+        return "upper"
+    if "lower" in region:
+        return "lower"
+    if "left" in region:
+        return "left"
+    if "right" in region:
+        return "right"
+    if "border" in region or "peripheral" in region:
+        return "peripheral"
+    return "non_specific"
+
+
+def _summarize_heatmap(heatmap, label):
+    """Produce conservative spatial evidence for the SLM prompt."""
+    if heatmap is None:
+        return {
+            "available": False,
+            "region": "not available",
+            "description": f"{label} artifact was not generated.",
+            "area_pct": None,
+            "peak_pixel": None,
+            "zone_family": None,
+        }
+
+    arr = np.asarray(heatmap, dtype=np.float32)
+    if arr.ndim == 3:
+        arr = arr.mean(axis=2)
+    if arr.size == 0 or not np.isfinite(arr).any():
+        return {
+            "available": False,
+            "region": "not available",
+            "description": f"{label} artifact was not interpretable.",
+            "area_pct": None,
+            "peak_pixel": None,
+            "zone_family": None,
+        }
+
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    arr = arr - float(arr.min())
+    max_val = float(arr.max())
+    if max_val > 0:
+        arr = arr / max_val
+
+    h, w = arr.shape[:2]
+    peak_y, peak_x = np.unravel_index(int(np.argmax(arr)), arr.shape)
+    x_norm = peak_x / max(w - 1, 1)
+    y_norm = peak_y / max(h - 1, 1)
+    region = _region_from_point(x_norm, y_norm)
+    active = arr >= max(0.55, float(np.percentile(arr, 85)))
+    area_pct = round(float(active.mean() * 100.0), 1)
+    peak_pixel = [
+        int(round(x_norm * (IMG_SIZE - 1))),
+        int(round(y_norm * (IMG_SIZE - 1))),
+    ]
+    prefix = "Grad-CAM++" if label == "gradcam" else "SwinV2 attention"
+
+    return {
+        "available": True,
+        "region": region,
+        "description": f"{prefix} concentrates on the {region}.",
+        "area_pct": area_pct,
+        "peak_pixel": peak_pixel,
+        "zone_family": _zone_family(region),
+    }
+
+
+def _confidence_level(confidence):
+    if confidence >= 0.75:
+        return "high"
+    if confidence >= 0.5:
+        return "moderate"
+    return "low"
+
+
+def build_feature_hints(prediction, gradcam_summary, attention_summary, metadata):
+    """Convert raw model evidence into conservative clinical feature hints."""
+    prediction = prediction or {}
+    gradcam_summary = gradcam_summary or {}
+    attention_summary = attention_summary or {}
+    metadata = metadata or {}
+
+    class_code = str(prediction.get("class", ""))
+    confidence = float(prediction.get("confidence") or 0.0)
+    threshold = CLASS_THRESHOLDS.get(class_code, 0.5)
+    grad_zone = gradcam_summary.get("zone_family")
+    attn_zone = attention_summary.get("zone_family")
+    grad_region = gradcam_summary.get("region")
+
+    if grad_zone and attn_zone and grad_zone == attn_zone:
+        evidence_alignment = "aligned"
+    elif grad_zone and attn_zone and (
+        "central" in {grad_zone, attn_zone} or "peripheral" in {grad_zone, attn_zone}
+    ):
+        evidence_alignment = "partially_aligned"
+    elif grad_zone and attn_zone:
+        evidence_alignment = "discordant"
+    else:
+        evidence_alignment = "partially_aligned"
+
+    primary_feature = "non-specific localisation"
+    secondary_features = []
+    if class_code == "VASC" and (gradcam_summary.get("available") or attention_summary.get("available")):
+        primary_feature = "vascular emphasis"
+    elif grad_region and "border" in grad_region:
+        primary_feature = "border irregularity"
+        secondary_features.append("asymmetry")
+    elif grad_region and "central" in grad_region and class_code in {"BCC", "SCC"}:
+        primary_feature = "central nodule"
+    elif grad_region and "central" in grad_region:
+        primary_feature = "lesion body"
+
+    if evidence_alignment == "aligned":
+        secondary_features.append("convergent image attribution")
+    elif evidence_alignment == "discordant":
+        secondary_features.append("discordant image attribution")
+
+    age = metadata.get("age") or metadata.get("ageYears")
+    sex = str(metadata.get("sex") or "").lower()
+    site = str(metadata.get("site") or metadata.get("anatomicalSite") or "").lower()
+    clinical_context = "metadata non-contributory"
+    try:
+        age_value = float(age) if age is not None else None
+    except (TypeError, ValueError):
+        age_value = None
+    if site in {"head/neck", "upper extremity"} and class_code in MALIGNANT:
+        clinical_context = "sun-exposed site increases suspicion"
+    elif age_value is not None and age_value < 35 and sex == "female" and "torso" in site:
+        clinical_context = "torso site in young female slightly lowers concern"
+
+    uncertainty_flags = []
+    if confidence < 0.5:
+        uncertainty_flags.append("low_confidence")
+    if evidence_alignment == "discordant":
+        uncertainty_flags.append("discordant_attention")
+    if abs(confidence - threshold) <= 0.08:
+        uncertainty_flags.append("borderline_threshold")
+
+    return {
+        "primary_feature": primary_feature,
+        "secondary_features": sorted(set(secondary_features)),
+        "evidence_alignment": evidence_alignment,
+        "clinical_context": clinical_context,
+        "uncertainty_flags": uncertainty_flags,
+        "area_pct": gradcam_summary.get("area_pct"),
+        "peak_pixel": gradcam_summary.get("peak_pixel"),
+    }
+
+
+def build_slm_payload(diagnosis, gradcam_summary=None, attention_summary=None, metadata=None):
+    """Build the strict evidence packet sent to the local SLM."""
+    diagnosis = diagnosis or {}
+    prediction = diagnosis.get("prediction", {})
+    class_code = str(prediction.get("class", ""))
+    confidence = float(prediction.get("confidence") or 0.0)
+    threshold = CLASS_THRESHOLDS.get(class_code, 0.5)
+    metadata = metadata or diagnosis.get("metadata_input", {})
+    explainability = diagnosis.get("explainability", {})
+    gradcam_summary = gradcam_summary or explainability.get("gradcam_summary") or {}
+    attention_summary = attention_summary or explainability.get("attention_summary") or {}
+    feature_hints = build_feature_hints(
+        prediction, gradcam_summary, attention_summary, metadata)
+
+    return {
+        "prediction": {
+            "class_code": class_code,
+            "class_label": prediction.get("class_full") or CLASS_FULL.get(class_code, class_code),
+            "confidence": round(confidence, 4),
+            "confidence_pct": round(confidence * 100.0, 1),
+            "confidence_level": _confidence_level(confidence),
+            "threshold": threshold,
+            "threshold_margin": round(confidence - threshold, 4),
+            "is_malignant": bool(prediction.get("is_malignant")),
+        },
+        "probabilities": diagnosis.get("probabilities", {}),
+        "top3": diagnosis.get("top3", []),
+        "gradcam": gradcam_summary,
+        "attention": attention_summary,
+        "metadata": metadata,
+        "feature_hints": feature_hints,
+        "clinical_flags": diagnosis.get("clinical_flags", {}),
+        "instructions": {
+            "audience": "general physician or dermatologist",
+            "scope": "preliminary decision support explanation only",
+            "forbidden": [
+                "independent diagnosis",
+                "treatment directive",
+                "biopsy directive",
+                "reassurance claim",
+                "unsupported dermoscopic features",
+            ],
+        },
+    }
+
+
+def build_slm_prompt(payload):
+    """Strict report prompt for Gemma/Ollama."""
+    return (
+        "You are a concise clinical dermatology reviewer embedded in LesionIQ. "
+        "Write preliminary physician-facing analysis from the supplied evidence packet only.\n\n"
+        "Rules:\n"
+        "- Explain why the model leaned toward the predicted class; do not merely restate it.\n"
+        "- Use dermoscopic terms only when supported by feature_hints or attribution summaries.\n"
+        "- Do not recommend treatment, biopsy, discharge, or reassurance as a directive.\n"
+        "- If feature_hints.evidence_alignment is discordant, explicitly state that certainty is reduced.\n"
+        "- If area_pct or peak_pixel is null, omit those measurements.\n"
+        "- Keep the EVIDENCE section to five concise clinical sentences.\n\n"
+        "Return exactly this schema:\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "LESIONIQ CLINICAL EXPLAINABILITY REPORT\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "PREDICTION\n"
+        "  Diagnosis   : <class label> (<class code>)\n"
+        "  Confidence  : <confidence_pct>% (<high/moderate/low confidence>)\n"
+        "  Threshold   : <threshold> (tuned — default 0.50)\n\n"
+        "EVIDENCE\n"
+        "  <five concise sentences for a physician, grounded in prediction, Grad-CAM++, "
+        "SwinV2 attention, feature hints, uncertainty flags, and metadata context.>\n\n"
+        "Evidence packet JSON:\n"
+        f"{json.dumps(payload, sort_keys=True)}"
+    )
+
+
+def _fallback_slm_report(payload):
+    pred = payload.get("prediction", {})
+    hints = payload.get("feature_hints", {})
+    gradcam = payload.get("gradcam", {})
+    attention = payload.get("attention", {})
+    alignment = hints.get("evidence_alignment", "partially_aligned")
+    uncertainty = hints.get("uncertainty_flags") or []
+
+    evidence = [
+        f"The model leans toward {pred.get('class_label', 'the top class')} because the calibrated probability is {pred.get('confidence_pct', 0)}% with {pred.get('confidence_level', 'low')} confidence.",
+        f"Grad-CAM++ localizes support to the {gradcam.get('region', 'lesion region')}, best summarized as {hints.get('primary_feature', 'non-specific localisation')}.",
+        f"SwinV2 attention is strongest over the {attention.get('region', 'lesion region')}.",
+    ]
+    if alignment == "discordant":
+        evidence.append("The Grad-CAM++ and attention evidence is not fully aligned, which reduces certainty.")
+    else:
+        evidence.append("The Grad-CAM++ and attention maps broadly reinforce the same diagnostic region.")
+    context = hints.get("clinical_context", "metadata non-contributory")
+    if uncertainty:
+        context = f"{context}; uncertainty flags include {', '.join(uncertainty)}"
+    evidence.append(
+        f"Metadata context is {context}; this remains decision support and requires qualified clinician verification."
+    )
+
+    return (
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "LESIONIQ CLINICAL EXPLAINABILITY REPORT\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "PREDICTION\n"
+        f"  Diagnosis   : {pred.get('class_label', 'Unknown')} ({pred.get('class_code', 'NA')})\n"
+        f"  Confidence  : {pred.get('confidence_pct', 0)}% ({pred.get('confidence_level', 'low')} confidence)\n"
+        f"  Threshold   : {pred.get('threshold', 0.5)} (tuned — default 0.50)\n\n"
+        "EVIDENCE\n"
+        f"  {' '.join(evidence)}"
+    )
+
+
+def validate_and_repair_slm_output(text, payload):
+    """Ensure the SLM report is usable before exposing it as slmSummary."""
+    text = (text or "").strip()
+    required = [
+        "LESIONIQ CLINICAL EXPLAINABILITY REPORT",
+        "PREDICTION",
+        "Diagnosis",
+        "Confidence",
+        "Threshold",
+        "EVIDENCE",
+    ]
+    forbidden = ["[", "]", "<", ">"]
+    unsafe_directives = [
+        "you should biopsy",
+        "biopsy is required",
+        "no follow-up needed",
+        "definitively benign",
+    ]
+    lower = text.lower()
+    if (
+        not text or
+        any(item not in text for item in required) or
+        any(token in text for token in forbidden) or
+        any(phrase in lower for phrase in unsafe_directives)
+    ):
+        return _fallback_slm_report(payload)
+
+    return text
 
 
 # ===================================================================
@@ -416,20 +888,26 @@ def diagnose_image(model, image_path, meta_tensor, scales, temperature,
                    output_dir, raw_meta, mel_threshold=None):
     """Run the full 5-stage pipeline on a single image.
 
-    Produces: original.png, gradcam.png, attention.png, diagnosis.json
+    Produces a case folder with raw, preprocessing, explainability, and
+    diagnosis.json artifacts. final_preprocessed.png is the model input.
     """
     stem       = Path(image_path).stem
     img_out_dir = Path(output_dir) / stem
     img_out_dir.mkdir(parents=True, exist_ok=True)
 
     # -- Preprocess --
-    img_tensor  = preprocess_image(image_path)
-    img_display = get_display_image(image_path)
+    import albumentations as A
+    from albumentations.pytorch import ToTensorV2
 
-    # Save preprocessed original
-    cv2.imwrite(str(img_out_dir / "original.png"),
-                cv2.cvtColor((img_display * 255).astype(np.uint8),
-                             cv2.COLOR_RGB2BGR))
+    final_bgr, artifact_paths = run_preprocessing_artifacts(
+        image_path, img_out_dir, IMG_SIZE)
+    final_rgb = cv2.cvtColor(final_bgr, cv2.COLOR_BGR2RGB)
+    img_display = final_rgb.astype(np.float32) / 255.0
+    transform = A.Compose([
+        A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ToTensorV2(),
+    ])
+    img_tensor = transform(image=final_rgb)["image"].unsqueeze(0)
 
     # -- Classify (TTA + temperature + DiffEvo) --
     probs   = predict(model, img_tensor, meta_tensor, temperature, scales)
@@ -452,6 +930,7 @@ def diagnose_image(model, image_path, meta_tensor, scales, temperature,
 
     # -- Grad-CAM++ --
     gradcam_file = None
+    gradcam_summary = _summarize_heatmap(None, "gradcam")
     if hasattr(model, 'effnet'):
         target_layer = _get_effnet_target_layer(model)
         if target_layer is not None:
@@ -460,20 +939,25 @@ def diagnose_image(model, image_path, meta_tensor, scales, temperature,
                 img_tensor.to(DEVICE),
                 meta_tensor.to(DEVICE) if meta_tensor is not None else None,
                 class_idx=int(ranked[0]))
+            gradcam_summary = _summarize_heatmap(cam, "gradcam")
             overlay = _make_heatmap_overlay(img_display, cam, cv2.COLORMAP_JET)
-            gradcam_file = "gradcam.png"
+            gradcam_file = ARTIFACT_FILENAMES["gradcam"]
+            artifact_paths["gradcam"] = str(img_out_dir / gradcam_file)
             cv2.imwrite(str(img_out_dir / gradcam_file),
                         cv2.cvtColor((overlay * 255).astype(np.uint8),
                                      cv2.COLOR_RGB2BGR))
 
     # -- Swin Attention --
     attention_file = None
+    attention_summary = _summarize_heatmap(None, "attention")
     if hasattr(model, 'swin'):
         attn_map = _extract_swin_attention(model, img_tensor.to(DEVICE))
         if attn_map is not None:
+            attention_summary = _summarize_heatmap(attn_map, "attention")
             overlay = _make_heatmap_overlay(img_display, attn_map,
                                            cv2.COLORMAP_INFERNO)
-            attention_file = "attention.png"
+            attention_file = ARTIFACT_FILENAMES["attention"]
+            artifact_paths["attention"] = str(img_out_dir / attention_file)
             cv2.imwrite(str(img_out_dir / attention_file),
                         cv2.cvtColor((overlay * 255).astype(np.uint8),
                                      cv2.COLOR_RGB2BGR))
@@ -519,8 +1003,22 @@ def diagnose_image(model, image_path, meta_tensor, scales, temperature,
         },
         "explainability": {
             "gradcam": gradcam_file,
+            "gradcam_summary": gradcam_summary,
             "attention": attention_file,
+            "attention_summary": attention_summary,
             "shap_metadata": shap_vals,
+        },
+        "artifacts": {
+            "raw": ARTIFACT_FILENAMES["raw"],
+            "dullrazor": ARTIFACT_FILENAMES["dullrazor"],
+            "shadesofgrey": ARTIFACT_FILENAMES["shadesofgrey"],
+            "clahe": ARTIFACT_FILENAMES["clahe"],
+            "borderremoved": ARTIFACT_FILENAMES["borderremoved"],
+            "final_preprocessed": ARTIFACT_FILENAMES["final_preprocessed"],
+            "original": ARTIFACT_FILENAMES["original"],
+            "gradcam": gradcam_file,
+            "attention": attention_file,
+            "diagnosis": ARTIFACT_FILENAMES["diagnosis"],
         },
         "metadata_input": {
             "age": raw_meta.get("age"),
@@ -528,9 +1026,22 @@ def diagnose_image(model, image_path, meta_tensor, scales, temperature,
             "site": raw_meta.get("site"),
         },
     }
+    diagnosis["feature_hints"] = build_feature_hints(
+        diagnosis["prediction"],
+        gradcam_summary,
+        attention_summary,
+        diagnosis["metadata_input"],
+    )
+    diagnosis["slm_payload"] = build_slm_payload(
+        diagnosis,
+        gradcam_summary=gradcam_summary,
+        attention_summary=attention_summary,
+        metadata=diagnosis["metadata_input"],
+    )
 
-    with open(str(img_out_dir / "diagnosis.json"), "w") as f:
+    with open(str(img_out_dir / ARTIFACT_FILENAMES["diagnosis"]), "w") as f:
         json.dump(diagnosis, f, indent=2)
+    artifact_paths["diagnosis"] = str(img_out_dir / ARTIFACT_FILENAMES["diagnosis"])
 
     # Console summary
     tag = "** MALIGNANT **" if is_mal else "benign"
@@ -538,7 +1049,56 @@ def diagnose_image(model, image_path, meta_tensor, scales, temperature,
           f"[{pred_conf:.1%}] {tag}")
     print(f"    -> {img_out_dir}")
 
-    return diagnosis
+    return {
+        "diagnosis": diagnosis,
+        "artifact_paths": artifact_paths,
+        "output_dir": str(img_out_dir),
+    }
+
+
+def _parse_age(age):
+    if age is None:
+        return None
+    if isinstance(age, str) and age.strip().upper() in {"", "NA", "UNKNOWN"}:
+        return None
+    try:
+        return float(age)
+    except (TypeError, ValueError):
+        return None
+
+
+def run_inference_pipeline(image_path, age, sex, site, mode="full",
+                           output_dir=None, checkpoint_path=None):
+    """Importable backend entrypoint for one live LesionIQ analysis.
+
+    Returns a dict with diagnosis.json-compatible data, absolute artifact paths,
+    and the output directory so the API can expose the bundle statically.
+    """
+    mode = normalize_mode(mode)
+    if output_dir is None:
+        output_dir = REPO_ROOT / "output" / "inference"
+
+    age_value = _parse_age(age)
+    sex_value = None if sex is None else str(sex).strip().lower()
+    if sex_value in {"", "na", "unknown"}:
+        sex_value = None
+    site_value = None if site is None else str(site).strip().lower()
+    if site_value in {"", "na", "unknown"}:
+        site_value = None
+
+    model, scales, temperature, mel_threshold = _load_runtime(
+        mode, checkpoint_path)
+    meta_tensor = encode_metadata(age_value, sex_value, site_value) \
+        if mode == "full" else None
+    raw_meta = {
+        "age": int(age_value) if age_value is not None else None,
+        "sex": sex_value,
+        "site": site_value,
+    }
+
+    return diagnose_image(
+        model, image_path, meta_tensor, scales, temperature,
+        output_dir, raw_meta, mel_threshold)
 
 
 # ===================================================================
@@ -557,7 +1117,7 @@ def main():
                         choices=["effnet_only", "swin_only",
                                  "image_only", "full"])
     parser.add_argument("--checkpoint", type=str, default=None)
-    parser.add_argument("--output-dir", type=str, default="./output/inference")
+    parser.add_argument("--output-dir", type=str, default=str(REPO_ROOT / "output" / "inference"))
 
     # Metadata — pass "NA" or omit for unknown/population defaults
     parser.add_argument("--age",  type=str, default=None,
@@ -665,7 +1225,7 @@ def main():
             result = diagnose_image(
                 model, img_path, meta_tensor, scales, temperature,
                 args.output_dir, raw_meta, mel_threshold)
-            all_results.append(result)
+            all_results.append(result["diagnosis"])
         except Exception as e:
             print(f"  [ERROR] {Path(img_path).name}: {e}")
             import traceback; traceback.print_exc()

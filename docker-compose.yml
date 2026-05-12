@@ -1,0 +1,38 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: lesioniq_backend
+    ports:
+      - "8000:8000"
+    environment:
+      LESIONIQ_ARTIFACT_ROOT: /app/backend/output/inference
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_CONTAINER: lesioniq_ollama
+      OLLAMA_MODEL: gemma3:4b-it-qat
+    volumes:
+      - .:/app
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: lesioniq_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+
+  ollama-pull:
+    image: curlimages/curl:8.7.1
+    depends_on:
+      - ollama
+    command: >
+      sh -c "sleep 8 &&
+      curl -s http://ollama:11434/api/pull
+      -d '{\"name\":\"gemma3:4b-it-qat\"}'"
+    restart: "no"
+
+volumes:
+  ollama-data:

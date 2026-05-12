@@ -4,13 +4,17 @@ LesionIQ Hybrid Classifier — Shared Configuration
 Edit the placeholder paths and hyper-parameters below before running.
 """
 
+from pathlib import Path
+
 import torch
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 # ── Data paths (EDIT THESE) ──────────────────────────────────
 TRAIN_IMG_DIR = r"path/to/LesionIQ/Segregated"       # per-class subfolders
 TEST_IMG_DIR  = r"path/to/LesionIQ/Test"              # per-class subfolders
 METADATA_CSV  = r"path/to/LesionIQ/metadata.csv"      # isic_id, age_approx, sex, region, disease-class
-OUTPUT_DIR    = r"./output"  # checkpoints, logs, reports
+OUTPUT_DIR    = str(BACKEND_ROOT / "output")  # checkpoints, logs, reports
 
 # ── Metadata column names ────────────────────────────────────
 META_ID_COL     = "isic_id"

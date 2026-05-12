@@ -22,11 +22,12 @@ Version History:
   -> v3 is the current production version.
 
 Usage:
-  python classifier/boost_f1_v3.py
+  python backend/classifier/boost_f1_v3.py
 """
 
 import os
 import sys
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -35,17 +36,18 @@ from sklearn.metrics import (f1_score, classification_report,
                              confusion_matrix, recall_score, precision_score)
 from scipy.optimize import differential_evolution
 
-# Use the training environment for data loading
-sys.path.insert(0, r"C:\Users\Admin\Desktop\models")
+SCRIPT_DIR = Path(__file__).resolve().parent
+BACKEND_ROOT = SCRIPT_DIR.parent
+for path in (SCRIPT_DIR, BACKEND_ROOT):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
-from config import DEVICE, NUM_CLASSES, USE_AMP, BATCH_SIZE
+from config import DEVICE, NUM_CLASSES, USE_AMP, BATCH_SIZE, OUTPUT_DIR
 from models import LesionIQHybrid
 from dataloader import get_dataloaders
 
-# Output to the github repo checkpoints
-REPO_CKPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                              "checkpoints")
-TRAIN_CKPT_DIR = r"C:\Users\Admin\Desktop\models\output\checkpoints"
+REPO_CKPT_DIR = str(BACKEND_ROOT / "checkpoints")
+TRAIN_CKPT_DIR = str(Path(OUTPUT_DIR) / "checkpoints")
 
 CLASS_NAMES = ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC"]
 MODES = ["effnet_only", "image_only", "full"]

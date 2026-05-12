@@ -30,7 +30,7 @@ Outputs:
     - Prints: val_f1 comparison (original vs SWA)
 
 Usage:
-    python fix_swa.py
+    python backend/classifier/fix_swa.py
 """
 
 import sys
@@ -39,7 +39,11 @@ import numpy as np
 from pathlib import Path
 from torch.optim.swa_utils import AveragedModel
 
-sys.path.insert(0, r"C:\Users\Admin\Desktop\models")
+SCRIPT_DIR = Path(__file__).resolve().parent
+BACKEND_ROOT = SCRIPT_DIR.parent
+for path in (SCRIPT_DIR, BACKEND_ROOT):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 from config import DEVICE, BATCH_SIZE, OUTPUT_DIR, FOCAL_GAMMA, FOCAL_ALPHA, LABEL_SMOOTHING
 from models import LesionIQHybrid
@@ -47,7 +51,7 @@ from dataloader import get_dataloaders
 from train import FocalLoss, _validate
 
 # ── Config ────────────────────────────────────────────────────
-CKPT_PATH = r"C:\Users\Admin\Desktop\models\output\checkpoints\best_full.pt"
+CKPT_PATH = str(Path(OUTPUT_DIR) / "checkpoints" / "best_full.pt")
 
 def main():
     print("[FIX-SWA] Loading dataloaders...")

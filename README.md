@@ -1,6 +1,58 @@
 # LesionIQ — Hybrid Dermatoscopy Classifier with Synthetic Data Augmentation
 
+[![CI](https://github.com/Astroshreyas1/LesionIQ/actions/workflows/ci.yml/badge.svg)](https://github.com/Astroshreyas1/LesionIQ/actions/workflows/ci.yml)
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
+
+`deep-learning` · `medical-imaging` · `dermoscopy` · `skin-cancer` · `skin-lesion-classification` · `pytorch` · `efficientnet` · `swin-transformer` · `explainability` · `grad-cam` · `stylegan2` · `isic` · `clinical-ai` · `dermatology` · `synthetic-data`
+
 A research-grade skin lesion classification pipeline combining dual-backbone deep learning (EfficientNet-B4 + Swin Transformer V2) with clinical metadata fusion and synthetic data augmentation via StyleGAN2-ADA. Built for the [ISIC 2019 Challenge](https://challenge.isic-archive.com/landing/2019/) 8-class dermoscopy classification task.
+
+---
+
+## Repository Layout
+
+LesionIQ is organized as a local backend/frontend monorepo:
+
+```text
+LesionIQ/
+├── backend/
+│   ├── __init__.py             # Backend Python package marker
+│   ├── api.py                  # FastAPI bridge used by the frontend
+│   ├── inference.py            # Convenience wrapper for classifier/inference.py
+│   ├── Dockerfile              # Backend container image (Python 3.11-slim + uvicorn)
+│   ├── classifier/             # Model, training, inference, explainability
+│   ├── preprocessing/          # DullRazor, color normalization, CLAHE, border removal
+│   ├── synthetic/              # StyleGAN2-ADA utilities and quality checks
+│   ├── data/                   # Dataset preparation utilities
+│   ├── checkpoints/            # Calibration files; large .pt/.pth weights are git-ignored
+│   └── requirements.txt
+├── frontend/
+│   ├── src/                    # React + TypeScript clinical review UI
+│   ├── public/
+│   ├── index.html
+│   ├── package.json
+│   ├── package-lock.json
+│   ├── vite.config.ts
+│   ├── tsconfig*.json
+│   ├── tailwind.config.ts
+│   ├── postcss.config.js
+│   ├── eslint.config.js
+│   └── .env.example
+├── docs/
+│   ├── fine_tuning_log.txt     # Complete hyperparameter changelog
+│   └── CONTEXT_HANDOFF.md      # Frontend dev handoff context
+├── scripts/                    # Utility scripts (version-controlled)
+├── output/                     # Generated inference bundles (git-ignored)
+├── docker-compose.yml
+├── .dockerignore
+├── README.md
+├── LICENSE
+└── .gitignore
+```
+
+Generated folders such as `node_modules/`, `frontend/dist/`, `output/`, `backend/output/`, caches, and local `.env` files are ignored. Large checkpoint weights (`backend/checkpoints/*.pt`, `*.pth`) should be stored outside git or supplied separately.
 
 ---
 
@@ -34,10 +86,15 @@ A research-grade skin lesion classification pipeline combining dual-backbone dee
 
 ---
 
-## Project Structure
+## Backend Package Map
 
 ```
-LesionIQ/
+LesionIQ/backend/
+├── __init__.py              # Backend Python package marker
+├── api.py                   # FastAPI bridge: POST /cases/analyze → CaseRecord
+├── inference.py             # Convenience wrapper re-exporting classifier/inference.py
+├── Dockerfile               # Python 3.11-slim container for uvicorn serving
+│
 ├── classifier/              # Core classification pipeline
 │   ├── config.py            # Hyperparameters and paths
 │   ├── models.py            # LesionIQHybrid architecture
@@ -46,7 +103,7 @@ LesionIQ/
 │   ├── evaluate.py          # Test-set evaluation suite
 │   ├── explainability.py    # Grad-CAM++, SHAP, attention maps, calibration
 │   ├── post_training.py     # Threshold tuning, ensembling, temperature scaling
-│   ├── inference.py         # Standalone inference CLI (no training deps needed)
+│   ├── inference.py         # Standalone inference CLI + importable run_inference_pipeline()
 │   ├── boost_f1.py          # Differential Evolution threshold optimizer
 │   ├── boost_f1_v2.py       # Clinical-aware DiffEvo + MEL safety + confusion analysis
 │   ├── boost_f1_v3.py       # Confusion matrix reframe: BCC suppress + SCC boost + MEL safety
@@ -84,14 +141,11 @@ LesionIQ/
 │   ├── best_effnet_only.pt  # EfficientNet-B4 only (F1=0.5392)
 │   ├── best_full_swa.pt     # SWA-averaged full model
 │   ├── optimal_scales.npy   # Clinical DiffEvo threshold scales
-│   └── optimal_temperature.npy  # Calibrated temperature
-│
-├── docs/
-│   └── fine_tuning_log.txt  # Complete hyperparameter changelog
+│   ├── optimal_temperature.npy  # Calibrated temperature
+│   └── mel_safety_threshold.npy # MEL recall safety threshold (0.265)
 │
 ├── requirements.txt
-├── .gitignore
-└── README.md
+└── .gitignore
 ```
 
 ---
@@ -118,9 +172,14 @@ LesionIQ/
 - **Metadata Branch (MLP)**: Perturbation-based feature attribution for tabular feature importance.
 - **Temperature Scaling**: Logits are divided by calibrated temperature (T=0.75) before softmax for improved confidence calibration.
 - **Final Output Generation**: Visual explainability artifacts (Grad-CAM++ overlays, Swin attention maps) and structured feature data (SHAP values, confidence scores, metadata) are packaged into a diagnostic bundle (`diagnosis.json` + images) and fed into Gemma 3 4B-IT (served locally via Ollama) to generate image-aware, clinically grounded explanations. Deterministic post-validation catches hallucinated claims against source evidence.
+- **SLM Validation & Fallback**: `validate_and_repair_slm_output()` enforces a strict schema check (required headings, forbidden bracket tokens, unsafe directive phrases). If the SLM response fails validation, a deterministic `_fallback_slm_report()` is generated from the evidence packet, guaranteeing a clinically grounded report is always available.
+- **Feature Hints Pipeline**: `build_feature_hints()` converts raw Grad-CAM++ and attention summaries into conservative clinical hints (primary feature, evidence alignment, uncertainty flags, clinical context) which are embedded in the SLM evidence packet.
 
-### Frontend UI (Work in Progress)
-- A web-based clinical dashboard is currently under development to serve the model predictions and SLM explanations to end-users.
+### Frontend UI
+- A React + TypeScript + Vite clinical review frontend is included in `frontend/src/`. It connects to the live FastAPI inference bridge through a single upload endpoint and consumes the typed `CaseRecord` response across all tabs.
+- The app is a decision-support workstation for 8-class dermoscopy classification review, calibrated confidence, threshold-aware differential diagnosis, preprocessing provenance, explainability audit, SLM explanations, and dermatologist feedback.
+- It is explicitly **not** a diagnostic replacement. Every screen keeps dermatologist review and clinical verification visible.
+- **Demo cases** are behind an environment flag (`VITE_LESIONIQ_ENABLE_DEMO_CASES=true`). When disabled (the default), only live-uploaded cases appear in the case selector.
 
 ---
 
@@ -170,29 +229,191 @@ The dominant misclassification patterns are **not** AK↔SCC as initially hypoth
 
 ## Quick Start
 
-### Prerequisites
+### Backend Quick Start
 ```bash
-pip install -r requirements.txt
+pip install -r backend/requirements.txt
 ```
+
+### Frontend Quick Start
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the Vite URL printed in the terminal, usually `http://127.0.0.1:5173/`.
+
+The frontend expects the live backend by default:
+```bash
+VITE_LESIONIQ_API_BASE_URL=http://localhost:8000
+```
+
+Run the API and local SLM stack:
+```bash
+docker compose up --build
+```
+
+The compose stack exposes:
+```text
+backend API: http://localhost:8000
+Ollama:      http://localhost:11434
+model:       gemma3:4b-it-qat
+```
+
+Build the production bundle:
+```bash
+cd frontend
+npm run build
+```
+
+#### Frontend Project Structure
+```text
+frontend/src/
+  app/
+    App.tsx            # Shared workflow state, case routing, screen composition
+    navigation.ts      # Screen IDs and sidebar nav items
+  components/
+    layout/            # AppShell, SidebarNav, TopBar, CaseSelector, ThemeToggle
+    primitives/        # Card, StatusBadge, SectionTabs, MetricCard, PageHeader, DisclaimerBanner, EmptyState
+    domain/            # UploadInferenceCard, ImageViewerCard, PredictionList, AttributionBars,
+                       # AuditChecklist, AuditNoteList, MetadataCard, DermoscopyMock, OverlayToggle,
+                       # PipelineStepCard, ActionPanel, HistoryList, ComparePanel
+  screens/             # CaseReview, Explainability, Preprocessing, History, Compare, Settings
+  data/
+    cases.ts           # Demo seed CaseRecords (behind VITE_LESIONIQ_ENABLE_DEMO_CASES flag)
+    classes.ts         # 8-class label map and canonical class order
+    system.ts          # System status and review action definitions
+  types/
+    lesioniq.ts        # CaseRecord, PredictionScore, ExplainabilityBundle, InferenceBundle,
+                       # UploadMetadataInput, and all supporting type definitions
+  lib/
+    format.ts          # Formatting utilities
+    lesioniqApi.ts     # Backend API adapter (runLesionIQAnalysis, resolveLesionIQArtifactUrl)
+  hooks/
+    useTheme.ts        # Dark/light theme hook
+  styles/
+    index.css          # Tailwind entrypoint and CSS custom properties
+  main.tsx             # React DOM entry point
+```
+
+#### Case Data Organization
+Seed records live in `frontend/src/data/cases.ts` and implement the same typed contract returned by the backend in `frontend/src/types/lesioniq.ts`.
+Each `CaseRecord` contains case identifiers, masked patient metadata, calibrated prediction scores for all 8 ISIC classes, per-class threshold margins, Grad-CAM / attention / metadata attribution summaries, SLM explanation text, audit checks, preprocessing steps, history entries, and compare entries.
+
+The exact class set is preserved:
+`MEL`, `NV`, `BCC`, `BKL`, `AK`, `SCC`, `VASC`, and `DF`.
+
+#### Frontend Behavior
+- The case selector in the top bar switches between multiple realistic de-identified mock cases.
+- Selected case context is carried across Case Review, Explainability, Preprocessing, History, Compare, and Settings.
+- Case Review includes a dermoscopy viewer with Raw, Grad-CAM, Attention, and Metadata overlay modes, threshold-aware prediction summary, all 8 ranked classes, metadata fusion context, SHAP-like attribution, and clinician actions.
+- Case Review includes a metadata-gated upload workflow. Uploaded images do not run inference until age, sex, and anatomical site are complete. Those values mirror the hybrid metadata branch described above.
+- Uploaded images plus complete metadata call the live backend API adapter in `frontend/src/lib/lesioniqApi.ts`. The response must be a `CaseRecord` with preprocessing artifacts, calibrated classifier output, Grad-CAM, attention, metadata attribution, `diagnosis.json`, and SLM explanation status.
+- Explainability includes tabs for Grad-CAM, Attention, Metadata Attribution, and SLM Summary, plus audit checks and feedback affordances.
+- Preprocessing exposes the exact 4-step LesionIQ pipeline: DullRazor hair removal, Shades-of-Gray color normalization, CLAHE in LAB color space, and vignette border removal.
+- History supports This Patient Only, All Cases, and High Concern filters.
+- Compare supports Current vs Previous, Raw vs Grad-CAM, and Raw vs Preprocessed review modes.
+- Settings shows calibration, threshold tuning, explainability status, model mode, theme controls, backend integration notes, and legal caveats.
+
+#### Frontend Environment Variables
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VITE_LESIONIQ_API_BASE_URL` | `http://localhost:8000` | Backend API base URL |
+| `VITE_LESIONIQ_ENABLE_DEMO_CASES` | unset (false) | Set to `true` to show demo seed cases in the case selector |
+
+#### Backend Integration Contract
+The frontend uses a single live analysis adapter:
+`frontend/src/lib/lesioniqApi.ts`.
+
+It exports two functions:
+- `runLesionIQAnalysis({ image, previewUrl, metadata })` — sends the multipart analysis request and returns a typed `CaseRecord`.
+- `resolveLesionIQArtifactUrl(url, outputDirectory)` — resolves relative artifact paths from the backend bundle into absolute URLs for image rendering.
+
+Configure the backend URL with:
+```bash
+VITE_LESIONIQ_API_BASE_URL=http://localhost:8000
+```
+
+When configured, the frontend sends one multipart request:
+```http
+POST /cases/analyze
+Content-Type: multipart/form-data
+```
+
+Request fields:
+```text
+image           Dermoscopy image file
+metadata        JSON string: { ageYears, sex, anatomicalSite, modelMode }
+slm_container   lesioniq_ollama
+slm_model       gemma3:4b-it-qat
+```
+
+The backend should run the complete pipeline:
+```text
+image + metadata
+  -> preprocessing layers
+  -> final preprocessed image
+  -> classifier inference
+  -> Grad-CAM++ and graded attention weights
+  -> diagnosis.json
+  -> local SLM call through Docker/Ollama
+  -> CaseRecord response
+```
+
+The local SLM is served by Docker Compose:
+```text
+container: lesioniq_ollama
+model:     gemma3:4b-it-qat
+```
+
+The frontend expects the backend response to match `CaseRecord` from `frontend/src/types/lesioniq.ts`. This keeps the UI modular: Case Review, Preprocessing, Explainability, History, Compare, and Settings all continue reading the same typed record from the shared live analysis response.
+
+Important response fields:
+- `predictionScores`: all 8 class probabilities, thresholds, and margins.
+- `metadata`: age, sex, anatomical site, Fitzpatrick type when available, and completeness.
+- `preprocessingSteps`: raw, DullRazor, color normalization, CLAHE, and border removal provenance.
+- `explainability`: Grad-CAM summary, attention summary, metadata attribution, SLM summary, audit checks, and notes.
+- `inferenceBundle`: artifact names or URLs for raw image, preprocessing layers, final preprocessed image, Grad-CAM, attention weights, and `diagnosis.json`.
+
+The backend serves artifact URLs from `/artifacts/{case_id}/`:
+```text
+backend/output/inference/<case_id>/
+  raw.png
+  01_dullrazor.png
+  02_shades_of_grey.png
+  03_clahe.png
+  04_border_removed.png
+  final_preprocessed.png
+  gradcam.png
+  attention.png
+  diagnosis.json
+```
+
+#### Prototype Assumptions and Caveats
+- Current dermoscopy images are stylized local UI previews, not patient images.
+- Demo seed data is de-identified, contains no PII, and is gated behind `VITE_LESIONIQ_ENABLE_DEMO_CASES=true`.
+- Uploaded image analysis uses the live FastAPI backend. No database or clinical report export service is connected yet.
+- The UI is suitable for hackathon/product demonstration and backend contract iteration, not clinical deployment.
+- `frontend/src/lib/lesioniqApi.ts` includes `resolveLesionIQArtifactUrl()` to handle both absolute and relative artifact URLs from the backend bundle.
 
 ### Data Setup
 1. Download [ISIC 2019 Training Data](https://challenge.isic-archive.com/data/#2019)
 2. Run Layer 0 preprocessing to create `layer0_train.csv`, `layer0_val.csv`, `layer0_test.csv`
-3. Update paths in `classifier/config.py` and `classifier/dataloader.py`
+3. Update paths in `backend/classifier/config.py` and `backend/classifier/dataloader.py`
 
 ### Training
 ```bash
 # Run full 4-experiment ablation (effnet_only → swin_only → image_only → full)
-python classifier/run_ablation.py
+python backend/classifier/run_ablation.py
 
 # Or train a single mode
-python classifier/train_classifier.py --mode full
+python backend/classifier/train_classifier.py --mode full
 ```
 
 ### SWA Recovery
 If SWA batch norm update fails (e.g., metadata shape mismatch), re-run without retraining:
 ```bash
-python classifier/train_classifier.py --fix-swa --checkpoint checkpoints/best_full.pt
+python backend/classifier/train_classifier.py --fix-swa --checkpoint backend/checkpoints/best_full.pt
 ```
 
 > **Note**: PyTorch's built-in `update_bn` discards metadata inputs, causing a shape mismatch in `full` mode (2816 vs 2848 features). The custom BN update loop in `train.py` passes both images and metadata correctly.
@@ -200,19 +421,19 @@ python classifier/train_classifier.py --fix-swa --checkpoint checkpoints/best_fu
 ### Post-Training Optimization
 ```bash
 # Works with 2+ checkpoints (skips missing ones gracefully):
-python classifier/post_training.py
+python backend/classifier/post_training.py
 ```
 
 ### Evaluation
 ```bash
-python classifier/train_classifier.py --eval-only --checkpoint output/checkpoints/best_full.pt
+python backend/classifier/train_classifier.py --eval-only --checkpoint backend/output/checkpoints/best_full.pt
 ```
 
 ---
 
 ## Preprocessing Pipeline
 
-To clean, normalize, and standardize the dataset before model training, all images go through a rigid 4-step preprocessing pipeline. Detailed structural similarity (SSIM) reports tracking image quality through these stages are available in `preprocessing/SSIM for ISIC 2019/`.
+To clean, normalize, and standardize the dataset before model training, all images go through a rigid 4-step preprocessing pipeline. Detailed structural similarity (SSIM) reports tracking image quality through these stages are available in `backend/preprocessing/SSIM for ISIC 2019/`.
 
 1. **DullRazor Hair Removal**: Uses a multi-directional morphological approach with four directional line-shaped kernels (0°, 45°, 90°, 135°) to detect hairs regardless of orientation. It applies Black-Hat filtering followed by OpenCV's `INPAINT_TELEA`. 
     - `kernel_length=17`: Chosen to detect thicker hairs. If larger, it may pick up lesion edges; if smaller, it misses thick hairs.
@@ -227,7 +448,7 @@ To clean, normalize, and standardize the dataset before model training, all imag
 4. **Vignette / Border Removal**: Removes the dark circular dermoscope lens artifacts.
     - **Crop Percentage**: 6% per edge.
     - **Image Dimensions**: Reduces image sizes slightly (e.g., from 1022×767 to 900×675 pixels).
-    - **Vignette Border**: The visible blue-grey edge is completely removed.
+    - **Vignette Border**: The visible lens edge is completely removed.
     - **Lesion Content**: Kept full (no lesion is cropped out). This prevents the model from associating hardware-induced vignettes with specific diagnoses.
 
 ---
@@ -291,44 +512,48 @@ For rare classes (DF, VASC, AK, SCC), we generate high-fidelity synthetic dermos
 
 To move the pipeline to a new machine:
 
-### 1. Copy the bundle
+### 1. Clone and install
 ```bash
-# The LesionIQ_bundle.zip contains:
-#   - All source code (classifier/, preprocessing/, synthetic/, data/)
-#   - Trained checkpoints (~2.4 GB)
-#   - Data CSVs (layer0_train/val/test.csv)
-#   - requirements.txt
-```
+git clone https://github.com/Astroshreyas1/LesionIQ.git
+cd LesionIQ
 
-### 2. Install dependencies
-```bash
 python -m venv venv
-venv\Scripts\activate        # Windows
-pip install -r requirements.txt
+source venv/bin/activate        # macOS / Linux
+# venv\Scripts\activate         # Windows
+
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install -r backend/requirements.txt
 ```
 
-### 3. Update paths
-Edit `classifier/dataloader.py` lines 20-22:
+### 2. Download checkpoints
+```bash
+python scripts/download_checkpoints.py
+```
+
+Or download manually from the [GitHub Releases](https://github.com/Astroshreyas1/LesionIQ/releases/tag/v1.0-checkpoints) page and place files in `backend/checkpoints/`.
+
+### 3. Update data paths
+Edit `backend/classifier/dataloader.py` lines 20–22:
 ```python
-TRAIN_CSV = r"<your_path>\data\layer0_train.csv"
-VAL_CSV   = r"<your_path>\data\layer0_val.csv"
-TEST_CSV  = r"<your_path>\data\layer0_test.csv"
+TRAIN_CSV = "path/to/data/layer0_train.csv"
+VAL_CSV   = "path/to/data/layer0_val.csv"
+TEST_CSV  = "path/to/data/layer0_test.csv"
 ```
 
 Then fix `image_path` column in each CSV to point to the actual image directory on the new machine:
 ```python
 import pandas as pd
-for csv in ['layer0_train.csv', 'layer0_val.csv', 'layer0_test.csv']:
-    df = pd.read_csv(csv)
+for csv_file in ['layer0_train.csv', 'layer0_val.csv', 'layer0_test.csv']:
+    df = pd.read_csv(csv_file)
     df['image_path'] = df['image_path'].str.replace(
-        r'C:\Users\Admin\Desktop\StyleGAN\output',
-        r'<your_image_dir>', regex=False
+        '<old_image_dir>',
+        '<your_image_dir>', regex=False
     )
-    df.to_csv(csv, index=False)
+    df.to_csv(csv_file, index=False)
 ```
 
 ### 4. For 5070 Ti (16 GB VRAM)
-In `classifier/config.py`:
+In `backend/classifier/config.py`:
 ```python
 BATCH_SIZE = 8           # halved from 16
 GRAD_ACCUM_STEPS = 6     # doubled from 3 (effective batch stays 48)
@@ -345,34 +570,61 @@ A standalone 5-stage pipeline that classifies dermoscopy images and produces exp
 Input Image + Metadata → Preprocessing → Classifier (4-way TTA) → Explainability → SLM Output Bundle
 ```
 
+### Importable API
+
+The inference pipeline is also available as an importable Python function for backend integration:
+
+```python
+from classifier.inference import run_inference_pipeline
+
+result = run_inference_pipeline(
+    image_path="lesion.png",
+    age=65,
+    sex="male",
+    site="head/neck",
+    mode="full",
+    output_dir="./output/inference",
+)
+# result["diagnosis"]       → diagnosis.json-compatible dict
+# result["artifact_paths"]  → absolute paths to all generated artifacts
+# result["output_dir"]      → case bundle directory
+```
+
+The FastAPI bridge (`backend/api.py`) calls `run_inference_pipeline()` internally.
+
 Each image produces a diagnostic bundle:
 ```
-output/inference/<image_name>/
-├── original.png        # Preprocessed input (384×384)
-├── gradcam.png         # Grad-CAM++ heatmap overlay (EfficientNet-B4)
-├── attention.png       # Swin Transformer attention rollout
-└── diagnosis.json      # Probabilities, SHAP, clinical flags, model info
+backend/output/inference/<case_id>/
+├── raw.png
+├── 01_dullrazor.png
+├── 02_shades_of_grey.png
+├── 03_clahe.png
+├── 04_border_removed.png
+├── final_preprocessed.png  # Model input (384×384)
+├── gradcam.png             # Grad-CAM++ heatmap overlay
+├── attention.png           # Swin Transformer attention rollout
+└── diagnosis.json          # CaseRecord-compatible inference trace
 ```
 
 ### Usage
 ```bash
 # Interactive mode — prompts for age, sex, site (with NA option)
-python classifier/inference.py --image lesion.png
+python backend/inference.py --image lesion.png
 
 # Explicit metadata
-python classifier/inference.py --image lesion.png --age 65 --sex male --site "head/neck"
+python backend/inference.py --image lesion.png --age 65 --sex male --site "head/neck"
 
 # NA metadata (uses population defaults: age=50, sex=unknown, site=unknown)
-python classifier/inference.py --image lesion.png --age NA --sex NA --site NA
+python backend/inference.py --image lesion.png --age NA --sex NA --site NA
 
 # Batch (entire directory, no interactive prompts)
-python classifier/inference.py --dir path/to/images/ --output-dir ./results
+python backend/inference.py --dir path/to/images/ --output-dir ./results
 
 # Lighter model (no Swin, no attention map output)
-python classifier/inference.py --image lesion.png --mode effnet_only
+python backend/inference.py --image lesion.png --mode effnet_only
 
 # Disable post-training optimizations
-python classifier/inference.py --image lesion.png --no-temperature --no-scales
+python backend/inference.py --image lesion.png --no-temperature --no-scales
 ```
 
 ### Interactive Metadata Input
@@ -449,7 +701,16 @@ Entering `NA` for any field uses population defaults (age=0.5 normalized, sex=un
 }
 ```
 
-The SLM receives `original.png` + `gradcam.png` + `diagnosis.json` → generates the clinical narrative.
+The SLM receives `final_preprocessed.png` + `gradcam.png` + `attention.png` + `diagnosis.json` plus metadata, then generates the clinical narrative.
+
+The evidence packet sent to the SLM is built by `build_slm_payload()`, which includes:
+- Prediction with confidence level, threshold, and margin
+- Full probability distribution and top-3 classes
+- Grad-CAM++ and attention spatial summaries (region, area coverage, peak pixel)
+- `feature_hints` — conservative clinical feature hints derived from heatmap analysis (primary feature, evidence alignment, uncertainty flags, clinical context)
+- Clinical flags and metadata
+
+The SLM response is validated by `validate_and_repair_slm_output()`, which checks for required report headings, rejects bracket tokens and unsafe clinical directives, and falls back to a deterministic template (`_fallback_slm_report()`) if the response fails validation.
 
 ### CLI options
 | Flag | Default | Description |
@@ -458,7 +719,7 @@ The SLM receives `original.png` + `gradcam.png` + `diagnosis.json` → generates
 | `--dir` | — | Path to directory of images |
 | `--mode` | `full` | `full`, `image_only`, `swin_only`, or `effnet_only` |
 | `--checkpoint` | auto | Custom checkpoint path |
-| `--output-dir` | `./output/inference` | Where to save diagnostic bundles |
+| `--output-dir` | `./backend/output/inference` | Where to save diagnostic bundles |
 | `--age` | interactive | Patient age (number or `NA`) |
 | `--sex` | interactive | `male`, `female`, `unknown`, or `NA` |
 | `--site` | interactive | Anatomical site (e.g. `head/neck`) or `NA` |
@@ -548,6 +809,8 @@ optimal_scales.npy          -- v3 Clinical-Weighted DiffEvo scales
 mel_safety_threshold.npy    -- MEL raw probability threshold (0.265)
 optimal_temperature.npy     -- LBFGS-calibrated temperature (0.75)
 ```
+
+All three calibration files are stored in `backend/checkpoints/` and are loaded automatically by `_load_runtime()` (cached via `lru_cache`) when the inference pipeline or API is invoked.
 
 At inference, if the raw (pre-scaling) MEL probability >= 0.265, the prediction is overridden to MEL regardless of the scaled argmax. This forces MEL recall to ~80% at the cost of precision (0.64 to 0.44). The tradeoff is clinically appropriate — **flagging a false positive is preferable to missing a melanoma.**
 

@@ -14,6 +14,12 @@ torch>=2.0
 torchvision>=0.15
 timm>=0.9                    # EfficientNet-B4 + SwinV2 backbones
 
+# --- API bridge -------------------------------------------------
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+httpx>=0.27
+
 # --- Data & augmentation --------------------------------------
 numpy>=1.21
 pandas>=1.4

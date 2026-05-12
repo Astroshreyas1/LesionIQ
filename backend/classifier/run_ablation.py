@@ -5,9 +5,11 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.append(r"./classifier")
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
-from config import DEVICE, EPOCHS, BATCH_SIZE
+from config import DEVICE, EPOCHS, BATCH_SIZE, OUTPUT_DIR
 from models import LesionIQHybrid
 from dataloader import get_dataloaders
 from train import train
@@ -40,8 +42,9 @@ def main():
     ABLATION_MODES = ['image_only', 'full']  # effnet_only & swin_only already done
     
     # ensure output dir exists
-    Path("./output/checkpoints").mkdir(parents=True, exist_ok=True)
-    Path("./output/logs").mkdir(parents=True, exist_ok=True)
+    output_dir = Path(OUTPUT_DIR)
+    (output_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
+    (output_dir / "logs").mkdir(parents=True, exist_ok=True)
 
     for mode in ABLATION_MODES:
         print(f"\n{'='*50}")
@@ -71,14 +74,14 @@ def main():
         finally:
             wandb.finish()
             # Rename best checkpoint so it doesn't get overwritten by next mode
-            best_ckpt = Path(f"./output/checkpoints/best_model.pt")
+            best_ckpt = output_dir / "checkpoints" / "best_model.pt"
             if best_ckpt.exists():
                 renamed = best_ckpt.with_name(f"best_{mode}.pt")
                 if renamed.exists():
                     renamed.unlink()
                 best_ckpt.rename(renamed)
             # Also rename SWA checkpoint
-            swa_ckpt = Path(f"./output/checkpoints/best_model_swa.pt")
+            swa_ckpt = output_dir / "checkpoints" / "best_model_swa.pt"
             if swa_ckpt.exists():
                 swa_renamed = swa_ckpt.with_name(f"best_{mode}_swa.pt")
                 if swa_renamed.exists():

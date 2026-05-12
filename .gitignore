@@ -12,6 +12,13 @@ dist/
 build/
 *.whl
 
+# Frontend
+node_modules/
+frontend/node_modules/
+.vite/
+frontend/.vite/
+frontend/dist/
+
 # Virtual environments
 venv/
 env/
@@ -34,12 +41,20 @@ desktop.ini
 .ipynb_checkpoints/
 
 # Model checkpoints in output/ (training artifacts)
+output/
+backend/output/
+test_output/
+backend/test_output/
+cache/
+backend/cache/
 output/checkpoints/*.pt
 output/checkpoints/*.pth
 
 # Checkpoints (excluded from git)
 checkpoints/*.pt
 checkpoints/*.pth
+backend/checkpoints/*.pt
+backend/checkpoints/*.pth
 
 # Training artifacts
 output/logs/
@@ -51,11 +66,14 @@ runs/
 # Data files (too large for git — download separately)
 data/*.csv
 data/*.zip
+backend/data/*.csv
+backend/data/*.zip
 *.csv
 *.zip
 
 # StyleGAN2-ADA (clone separately)
 synthetic/stylegan2/stylegan2-ada-pytorch/
+backend/synthetic/stylegan2/stylegan2-ada-pytorch/
 training-runs/
 datasets/
 
@@ -69,7 +87,12 @@ synthetic_stylegan/
 *.jpeg
 *.bmp
 !docs/*.png
-!preprocessing/SSIM for ISIC 2019/*.png
+!backend/preprocessing/SSIM for ISIC 2019/*.png
 
 # LoRA weights
 lora_weights/
+
+# Local secrets
+.env
+frontend/.env
+backend/.env
