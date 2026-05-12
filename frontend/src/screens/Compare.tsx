@@ -86,7 +86,7 @@ export function Compare({ caseRecord }: { caseRecord: CaseRecord }) {
     }));
 
     return [...entries].sort(compareEntriesRecentFirst);
-  }, [caseRecord.id, caseRecord.compareEntries, caseRecord.historyEntries]);
+  }, [caseRecord.compareEntries, caseRecord.historyEntries]);
 
   const [mode, setMode] = useState<CompareMode>("previous");
   const [selectedId, setSelectedId] = useState(compareEntries[0]?.id ?? "");
