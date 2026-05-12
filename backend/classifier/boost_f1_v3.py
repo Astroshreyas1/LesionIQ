@@ -42,9 +42,9 @@ for path in (SCRIPT_DIR, BACKEND_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from config import DEVICE, NUM_CLASSES, USE_AMP, BATCH_SIZE, OUTPUT_DIR
-from models import LesionIQHybrid
-from dataloader import get_dataloaders
+from backend.classifier.config import DEVICE, NUM_CLASSES, USE_AMP, BATCH_SIZE, OUTPUT_DIR
+from backend.classifier.models import LesionIQHybrid
+from backend.classifier.dataloader import get_dataloaders
 
 REPO_CKPT_DIR = str(BACKEND_ROOT / "checkpoints")
 TRAIN_CKPT_DIR = str(Path(OUTPUT_DIR) / "checkpoints")

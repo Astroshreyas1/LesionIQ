@@ -29,8 +29,8 @@ from sklearn.metrics import (
     brier_score_loss,
 )
 
-from config import DEVICE, USE_AMP, OUTPUT_DIR, NUM_CLASSES, CONFIDENCE_THRESHOLD
-from models import HybridClassifier
+from backend.classifier.config import DEVICE, USE_AMP, OUTPUT_DIR, NUM_CLASSES, CONFIDENCE_THRESHOLD
+from backend.classifier.models import HybridClassifier
 
 # ── Collect predictions ──────────────────────────────────────
 

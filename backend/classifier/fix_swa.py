@@ -45,10 +45,10 @@ for path in (SCRIPT_DIR, BACKEND_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from config import DEVICE, BATCH_SIZE, OUTPUT_DIR, FOCAL_GAMMA, FOCAL_ALPHA, LABEL_SMOOTHING
-from models import LesionIQHybrid
-from dataloader import get_dataloaders
-from train import FocalLoss, _validate
+from backend.classifier.config import DEVICE, BATCH_SIZE, OUTPUT_DIR, FOCAL_GAMMA, FOCAL_ALPHA, LABEL_SMOOTHING
+from backend.classifier.models import LesionIQHybrid
+from backend.classifier.dataloader import get_dataloaders
+from backend.classifier.train import FocalLoss, _validate
 
 # ── Config ────────────────────────────────────────────────────
 CKPT_PATH = str(Path(OUTPUT_DIR) / "checkpoints" / "best_full.pt")

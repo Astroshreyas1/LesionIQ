@@ -19,14 +19,14 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from config import (
+from backend.classifier.config import (
     DEVICE, SEED, OUTPUT_DIR, META_AGE_COL, META_SEX_COL, META_REGION_COL,
 )
-from dataset import build_dataloaders
-from models import LesionIQHybrid
-from train import train
-from evaluate import evaluate
-from explainability import run_explainability
+from backend.classifier.dataset import build_dataloaders
+from backend.classifier.models import LesionIQHybrid
+from backend.classifier.train import train
+from backend.classifier.evaluate import evaluate
+from backend.classifier.explainability import run_explainability
 from torch.optim.swa_utils import AveragedModel
 
 
@@ -117,12 +117,12 @@ def main() -> None:
         print(f"  SWA checkpoint saved -> {swa_path}")
 
         # Evaluate SWA model
-        from train import FocalLoss
-        from config import FOCAL_GAMMA, FOCAL_ALPHA, LABEL_SMOOTHING
+        from backend.classifier.train import FocalLoss
+        from backend.classifier.config import FOCAL_GAMMA, FOCAL_ALPHA, LABEL_SMOOTHING
         alpha = torch.tensor(FOCAL_ALPHA, dtype=torch.float32).to(DEVICE)
         criterion = FocalLoss(gamma=FOCAL_GAMMA, alpha=alpha,
                               label_smoothing=LABEL_SMOOTHING).to(DEVICE)
-        from train import _validate
+        from backend.classifier.train import _validate
         swa_loss, swa_acc, swa_f1, swa_auc = _validate(swa_model, val_loader, criterion, DEVICE)
         print(f"  SWA model: val_f1={swa_f1:.4f}  val_auc={swa_auc:.4f}  val_acc={swa_acc:.4f}")
         print("\nDone.")

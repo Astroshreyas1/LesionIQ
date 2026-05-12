@@ -23,12 +23,12 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from config import (
+from backend.classifier.config import (
     DEVICE, USE_AMP, OUTPUT_DIR, NUM_CLASSES,
     CONFIDENCE_THRESHOLD, NUM_EXPLAINABILITY_SAMPLES,
     SHAP_BACKGROUND_SAMPLES,
 )
-from models import HybridClassifier
+from backend.classifier.models import HybridClassifier
 
 # =====================================================================
 #  1. Grad-CAM++  (EfficientNet-B4 branch)

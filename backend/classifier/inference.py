@@ -145,12 +145,12 @@ def encode_metadata(age=None, sex=None, site=None):
 #  Stage 2 — Preprocessing (delegates to preprocessing package)
 # ===================================================================
 
-from preprocessing import run_pipeline as _run_preprocess_pipeline
-from preprocessing.dull_razor import dullrazor as _dullrazor
-from preprocessing.shades_of_grey import shades_of_gray as _shades_of_gray
-from preprocessing.apply_clahe import apply_clahe as _apply_clahe
-from preprocessing.remove_circular_border import has_circular_border as _has_circular_border
-from preprocessing.remove_circular_border import inscribed_square as _inscribed_square
+from backend.preprocessing import run_pipeline as _run_preprocess_pipeline
+from backend.preprocessing.dull_razor import dullrazor as _dullrazor
+from backend.preprocessing.shades_of_grey import shades_of_gray as _shades_of_gray
+from backend.preprocessing.apply_clahe import apply_clahe as _apply_clahe
+from backend.preprocessing.remove_circular_border import has_circular_border as _has_circular_border
+from backend.preprocessing.remove_circular_border import inscribed_square as _inscribed_square
 
 
 ARTIFACT_FILENAMES = {

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import timm
-from config import NUM_CLASSES
+from backend.classifier.config import NUM_CLASSES
 
 class LesionIQHybrid(nn.Module):
     def __init__(self, num_classes=NUM_CLASSES, meta_dim=13, mode='full'):

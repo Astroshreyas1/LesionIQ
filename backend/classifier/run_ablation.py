@@ -9,10 +9,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from config import DEVICE, EPOCHS, BATCH_SIZE, OUTPUT_DIR
-from models import LesionIQHybrid
-from dataloader import get_dataloaders
-from train import train
+from backend.classifier.config import DEVICE, EPOCHS, BATCH_SIZE, OUTPUT_DIR
+from backend.classifier.models import LesionIQHybrid
+from backend.classifier.dataloader import get_dataloaders
+from backend.classifier.train import train
 
 # Known training class distribution
 counts = {

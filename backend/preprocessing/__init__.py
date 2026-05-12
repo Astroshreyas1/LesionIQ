@@ -17,10 +17,10 @@ Usage (inference):
 import cv2
 import numpy as np
 
-from preprocessing.dull_razor import dullrazor
-from preprocessing.shades_of_grey import shades_of_gray
-from preprocessing.apply_clahe import apply_clahe
-from preprocessing.remove_circular_border import has_circular_border, inscribed_square
+from backend.preprocessing.dull_razor import dullrazor
+from backend.preprocessing.shades_of_grey import shades_of_gray
+from backend.preprocessing.apply_clahe import apply_clahe
+from backend.preprocessing.remove_circular_border import has_circular_border, inscribed_square
 
 
 def _apply_clahe_to_array(img_bgr, clip_limit=2.0):

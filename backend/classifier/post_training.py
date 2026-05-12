@@ -20,9 +20,9 @@ import torch.nn.functional as F
 from torch.cuda.amp import autocast
 from sklearn.metrics import f1_score, roc_auc_score, classification_report
 from scipy.optimize import minimize
-from config import DEVICE, NUM_CLASSES, USE_AMP, OUTPUT_DIR, BATCH_SIZE
-from models import LesionIQHybrid
-from dataloader import get_dataloaders
+from backend.classifier.config import DEVICE, NUM_CLASSES, USE_AMP, OUTPUT_DIR, BATCH_SIZE
+from backend.classifier.models import LesionIQHybrid
+from backend.classifier.dataloader import get_dataloaders
 
 CKPT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
 MODES = ["effnet_only", "swin_only", "image_only", "full"]

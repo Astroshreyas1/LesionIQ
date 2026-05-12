@@ -36,9 +36,9 @@ for path in (SCRIPT_DIR, BACKEND_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from config import DEVICE, NUM_CLASSES, USE_AMP, OUTPUT_DIR, BATCH_SIZE
-from models import LesionIQHybrid
-from dataloader import get_dataloaders
+from backend.classifier.config import DEVICE, NUM_CLASSES, USE_AMP, OUTPUT_DIR, BATCH_SIZE
+from backend.classifier.models import LesionIQHybrid
+from backend.classifier.dataloader import get_dataloaders
 
 CKPT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
 CLASS_NAMES = ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC"]

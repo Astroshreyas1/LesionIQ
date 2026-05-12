@@ -24,13 +24,13 @@ from torch.optim.swa_utils import AveragedModel, SWALR
 from torch.utils.data import DataLoader
 from sklearn.metrics import f1_score, roc_auc_score
 
-from config import (
+from backend.classifier.config import (
     DEVICE, EPOCHS, LR, WEIGHT_DECAY, PATIENCE, COSINE_T_MAX,
     SWIN_LR_DECAY, FOCAL_GAMMA, FOCAL_ALPHA, USE_AMP,
     META_AUX_WEIGHT, META_LR_SCALE, OUTPUT_DIR, GRAD_ACCUM_STEPS,
     LABEL_SMOOTHING,
 )
-from models import LesionIQHybrid
+from backend.classifier.models import LesionIQHybrid
 
 # ── Focal loss ────────────────────────────────────────────────
 
