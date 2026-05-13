@@ -158,9 +158,8 @@ def _site(value: Any) -> str:
 def _artifact_url(request: Request, bundle_id: str, name: str | None) -> str:
     if not name:
         return ""
-    base = str(request.base_url).rstrip("/")
     basename = Path(name).name
-    return f"{base}/artifacts/{bundle_id}/{basename}"
+    return f"/artifacts/{bundle_id}/{basename}"
 
 
 def _probability(diagnosis: dict[str, Any], class_code: str) -> float:
@@ -438,7 +437,7 @@ def _case_record(
 
     inference_bundle = {
         "sourceImageName": source_name,
-        "outputDirectory": f"{str(request.base_url).rstrip('/')}/artifacts/{bundle_id}/",
+        "outputDirectory": f"/artifacts/{bundle_id}/",
         "rawArtifact": _artifact_url(request, bundle_id, artifacts.get("raw")),
         "dullRazorArtifact": _artifact_url(request, bundle_id, artifacts.get("dullrazor")),
         "normalizedArtifact": _artifact_url(request, bundle_id, artifacts.get("shadesofgrey")),
