@@ -584,7 +584,7 @@ async def analyze_case(
             sex=metadata_payload.get("sex"),
             site=metadata_payload.get("anatomicalSite"),
             mode=_backend_mode(metadata_payload.get("modelMode")),
-            output_dir=str(ARTIFACT_ROOT / bundle_id),
+            output_dir=str(ARTIFACT_ROOT),
         )
         slm_summary, slm_status = await _generate_slm_summary(
             result["diagnosis"], result["artifact_paths"], metadata_payload

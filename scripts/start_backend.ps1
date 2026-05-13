@@ -29,7 +29,8 @@ if (Test-Path $venvActivate) {
 
 # Start uvicorn in the background
 Write-Host "[2/3] Starting FastAPI backend on port 8000..." -ForegroundColor Yellow
-$backendJob = Start-Process -PassThru -NoNewWindow powershell -ArgumentList "-Command", "python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000"
+$startCmd = if (Test-Path $venvActivate) { ". `"$venvActivate`"; python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000" } else { "python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000" }
+$backendJob = Start-Process -PassThru -NoNewWindow powershell -ArgumentList "-Command", "`"$startCmd`""
 
 # Give the server a moment to boot
 Start-Sleep -Seconds 2
