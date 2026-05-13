@@ -183,7 +183,7 @@ LesionIQ/backend/
 
 ---
 
-## 📈 Results
+## Results
 
 ### Ablation Study
 
@@ -856,3 +856,46 @@ This project is released under the [MIT License](LICENSE).
 - [ISIC Archive](https://www.isic-archive.com/) for the dermoscopy dataset
 - [timm](https://github.com/huggingface/pytorch-image-models) for pretrained backbone models
 - [StyleGAN2-ADA](https://github.com/NVlabs/stylegan2-ada-pytorch) for synthetic generation
+
+---
+
+## Hosting / Deployment
+
+LesionIQ uses a **split deployment** — the frontend is a static site hosted on the edge, while inference runs locally on a GPU machine.
+
+### Frontend → Vercel (static)
+
+The React + Vite frontend deploys as a static build on [Vercel](https://vercel.com/):
+
+1. Import the GitHub repo on Vercel.
+2. Set **Root Directory** to `frontend`.
+3. Add the environment variable `VITE_LESIONIQ_API_BASE_URL` set to your backend tunnel URL (see below).
+4. Deploy — Vercel auto-detects Vite and builds with `npm run build`.
+
+A `frontend/vercel.json` is included for SPA routing.
+
+### Backend → Local GPU + ngrok tunnel
+
+The FastAPI backend runs on your local machine (GPU required for inference) and is exposed to the internet via [ngrok](https://ngrok.com/):
+
+```bash
+# Terminal 1 — Start the backend
+cd LesionIQ
+uvicorn backend.api:app --host 0.0.0.0 --port 8000
+
+# Terminal 2 — Expose via ngrok
+ngrok http 8000
+```
+
+Copy the `https://xxxx.ngrok-free.app` URL from the ngrok output and set it as `VITE_LESIONIQ_API_BASE_URL` in Vercel's environment variables.
+
+> **Tip:** For a persistent tunnel URL (no change on restart), use `ngrok http 8000 --url=your-custom-subdomain.ngrok-free.app` (requires a free ngrok account) or use [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) as a zero-cost alternative.
+
+### CORS
+
+The backend CORS middleware accepts any `*.vercel.app` and `*.ngrok-free.app` origin by default. For custom domains, set the `LESIONIQ_FRONTEND_URL` environment variable before starting the backend:
+
+```bash
+export LESIONIQ_FRONTEND_URL=https://your-custom-domain.com
+uvicorn backend.api:app --host 0.0.0.0 --port 8000
+```

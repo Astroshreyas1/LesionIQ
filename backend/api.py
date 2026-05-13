@@ -103,15 +103,23 @@ PREPROCESSING_STEPS = [
 ]
 
 
+_CORS_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+]
+
+# Allow the Vercel-hosted frontend and any custom domain set via env
+_vercel_url = os.getenv("LESIONIQ_FRONTEND_URL", "")
+if _vercel_url:
+    _CORS_ORIGINS.append(_vercel_url.rstrip("/"))
+
 app = FastAPI(title="LesionIQ API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:4173",
-        "http://127.0.0.1:4173",
-    ],
+    allow_origins=_CORS_ORIGINS,
+    allow_origin_regex=r"https://.*\.vercel\.app|https://.*\.ngrok-free\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
