@@ -574,7 +574,7 @@ async def analyze_case(
     saved_path.write_bytes(await image.read())
 
     try:
-        from classifier.inference import run_inference_pipeline
+        from backend.classifier.inference import run_inference_pipeline
 
         result = run_inference_pipeline(
             image_path=str(saved_path),
