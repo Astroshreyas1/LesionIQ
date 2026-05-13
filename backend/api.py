@@ -156,8 +156,11 @@ def _site(value: Any) -> str:
 
 
 def _artifact_url(request: Request, bundle_id: str, name: str | None) -> str:
+    if not name:
+        return ""
     base = str(request.base_url).rstrip("/")
-    return f"{base}/artifacts/{bundle_id}/{name}" if name else ""
+    basename = Path(name).name
+    return f"{base}/artifacts/{bundle_id}/{basename}"
 
 
 def _probability(diagnosis: dict[str, Any], class_code: str) -> float:
@@ -582,7 +585,7 @@ async def analyze_case(
             sex=metadata_payload.get("sex"),
             site=metadata_payload.get("anatomicalSite"),
             mode=_backend_mode(metadata_payload.get("modelMode")),
-            output_dir=str(ARTIFACT_ROOT),
+            output_dir=str(ARTIFACT_ROOT / bundle_id),
         )
         slm_summary, slm_status = await _generate_slm_summary(
             result["diagnosis"], result["artifact_paths"], metadata_payload
