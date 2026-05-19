@@ -63,7 +63,7 @@ output/explainability/
 wandb/
 runs/
 
-# Data files (too large for git — download separately)
+# Data files
 data/*.csv
 data/*.zip
 backend/data/*.csv
@@ -71,13 +71,13 @@ backend/data/*.zip
 *.csv
 *.zip
 
-# StyleGAN2-ADA (clone separately)
+# StyleGAN2-ADA 
 synthetic/stylegan2/stylegan2-ada-pytorch/
 backend/synthetic/stylegan2/stylegan2-ada-pytorch/
 training-runs/
 datasets/
 
-# Synthetic images (generated, not tracked)
+# Synthetic images 
 synthetic_output/
 synthetic_stylegan/
 
