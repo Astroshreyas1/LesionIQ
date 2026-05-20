@@ -3,31 +3,43 @@ LesionIQ Hybrid Classifier — Main Entry Point
 ================================================
 Usage:
     python train_classifier.py                          # train hybrid (default)
-    python train_classifier.py --model efficientnet     # EfficientNet-B4 only
-    python train_classifier.py --model swin             # Swin-Base only
+    python train_classifier.py --mode effnet_only       # EfficientNet-B4 only
+    python train_classifier.py --mode swin_only         # Swin-Base only
     python train_classifier.py --eval-only --checkpoint path/to/best_model.pt
     python train_classifier.py --fix-swa --checkpoint path/to/best_model.pt
 """
 
 import argparse
-import os
-import sys
 import json
 import random
+import sys
 from pathlib import Path
 
 import numpy as np
 import torch
+from torch.optim.swa_utils import AveragedModel
 
 from backend.classifier.config import (
-    DEVICE, SEED, OUTPUT_DIR, META_AGE_COL, META_SEX_COL, META_REGION_COL,
+    BATCH_SIZE, DEVICE, FOCAL_ALPHA, FOCAL_GAMMA, LABEL_SMOOTHING,
+    OUTPUT_DIR, SEED,
 )
-from backend.classifier.dataset import build_dataloaders
+from backend.classifier.dataloader import LABEL_COLS, META_COLS, get_dataloaders
 from backend.classifier.models import LesionIQHybrid
-from backend.classifier.train import train
+from backend.classifier.train import FocalLoss, _validate, train
 from backend.classifier.evaluate import evaluate
 from backend.classifier.explainability import run_explainability
-from torch.optim.swa_utils import AveragedModel
+
+# Known training class distribution (real + synthetic)
+CLASS_COUNTS = {
+    0: 3640,   # MEL
+    1: 10304,  # NV
+    2: 2668,   # BCC
+    3: 1500,   # AK
+    4: 2126,   # BKL
+    5: 588,    # DF
+    6: 615,    # VASC
+    7: 1305,   # SCC
+}
 
 
 def _set_seed(seed: int = SEED) -> None:
@@ -40,14 +52,13 @@ def _set_seed(seed: int = SEED) -> None:
     torch.backends.cudnn.benchmark = False
 
 
-def _meta_feature_names(encoder) -> list:
-    """Build human-readable feature names for SHAP from the encoder."""
-    names = [META_AGE_COL]
-    for cat in encoder.sex_cats:
-        names.append(f"{META_SEX_COL}={cat}")
-    for cat in encoder.region_cats:
-        names.append(f"{META_REGION_COL}={cat}")
-    return names
+def _compute_class_weights() -> np.ndarray:
+    total = sum(CLASS_COUNTS.values())
+    num_classes = len(CLASS_COUNTS)
+    weights = np.zeros(num_classes, dtype=np.float32)
+    for cls, count in CLASS_COUNTS.items():
+        weights[cls] = total / (num_classes * count)
+    return weights
 
 
 def main() -> None:
@@ -68,15 +79,16 @@ def main() -> None:
     Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 
     # ── Data ──────────────────────────────────────────────────
-    (train_loader, val_loader, test_loader,
-     meta_encoder, class_names, class_weights) = build_dataloaders()
+    train_loader, val_loader, test_loader = get_dataloaders(batch_size=BATCH_SIZE)
+    class_names = LABEL_COLS
+    class_weights = _compute_class_weights()
 
     # ── Model ─────────────────────────────────────────────────
-    model = LesionIQHybrid(meta_dim=meta_encoder.dim, mode=args.mode)
+    model = LesionIQHybrid(meta_dim=len(META_COLS), mode=args.mode)
 
     # ── Load checkpoint (if provided) ─────────────────────────
     if args.checkpoint:
-        ckpt = torch.load(args.checkpoint, map_location="cpu")
+        ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
         print(f"[CKPT] Loaded {args.checkpoint}  "
               f"(epoch={ckpt.get('epoch')}, val_f1={ckpt.get('val_f1', '?')})")
@@ -116,13 +128,9 @@ def main() -> None:
         }, swa_path)
         print(f"  SWA checkpoint saved -> {swa_path}")
 
-        # Evaluate SWA model
-        from backend.classifier.train import FocalLoss
-        from backend.classifier.config import FOCAL_GAMMA, FOCAL_ALPHA, LABEL_SMOOTHING
         alpha = torch.tensor(FOCAL_ALPHA, dtype=torch.float32).to(DEVICE)
         criterion = FocalLoss(gamma=FOCAL_GAMMA, alpha=alpha,
                               label_smoothing=LABEL_SMOOTHING).to(DEVICE)
-        from backend.classifier.train import _validate
         swa_loss, swa_acc, swa_f1, swa_auc = _validate(swa_model, val_loader, criterion, DEVICE)
         print(f"  SWA model: val_f1={swa_f1:.4f}  val_auc={swa_auc:.4f}  val_acc={swa_acc:.4f}")
         print("\nDone.")
@@ -131,7 +139,7 @@ def main() -> None:
     # ── Train ─────────────────────────────────────────────────
     if not args.eval_only:
         best_path = train(model, train_loader, val_loader, class_weights)
-        ckpt = torch.load(best_path, map_location="cpu")
+        ckpt = torch.load(best_path, map_location="cpu", weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
         print(f"[CKPT] Reloaded best checkpoint for evaluation")
 
@@ -142,8 +150,7 @@ def main() -> None:
 
     # ── Explainability ────────────────────────────────────────
     if not args.skip_explain:
-        feat_names = _meta_feature_names(meta_encoder)
-        run_explainability(model, test_loader, class_names, feat_names)
+        run_explainability(model, test_loader, class_names, META_COLS)
 
     # ── Save run config ───────────────────────────────────────
     run_info = {
@@ -151,8 +158,8 @@ def main() -> None:
         "seed": SEED,
         "device": DEVICE,
         "class_names": class_names,
-        "meta_dim": meta_encoder.dim,
-        "meta_features": _meta_feature_names(meta_encoder),
+        "meta_dim": len(META_COLS),
+        "meta_features": META_COLS,
     }
     info_path = Path(OUTPUT_DIR) / "run_info.json"
     with open(info_path, "w") as f:

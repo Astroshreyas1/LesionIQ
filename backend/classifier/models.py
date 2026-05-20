@@ -4,7 +4,7 @@ import timm
 from backend.classifier.config import NUM_CLASSES
 
 class LesionIQHybrid(nn.Module):
-    def __init__(self, num_classes=NUM_CLASSES, meta_dim=13, mode='full'):
+    def __init__(self, num_classes=NUM_CLASSES, meta_dim=13, mode='full', pretrained=True):
         """
         mode options:
           'effnet_only'  — Experiment A
@@ -17,12 +17,12 @@ class LesionIQHybrid(nn.Module):
 
         if mode in ('effnet_only', 'image_only', 'full'):
             self.effnet = timm.create_model(
-                'efficientnet_b4', pretrained=True, num_classes=0)
+                'efficientnet_b4', pretrained=pretrained, num_classes=0)
             eff_dim = self.effnet.num_features  # 1792
         
         if mode in ('swin_only', 'image_only', 'full'):
             self.swin = timm.create_model(
-                'swinv2_base_window12to24_192to384.ms_in22k_ft_in1k', pretrained=True, num_classes=0)
+                'swinv2_base_window12to24_192to384.ms_in22k_ft_in1k', pretrained=pretrained, num_classes=0)
             swin_dim = self.swin.num_features   # 1024
 
         if mode == 'full':

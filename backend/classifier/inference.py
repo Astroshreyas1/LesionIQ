@@ -151,6 +151,7 @@ from backend.preprocessing.shades_of_grey import shades_of_gray as _shades_of_gr
 from backend.preprocessing.apply_clahe import apply_clahe as _apply_clahe
 from backend.preprocessing.remove_circular_border import has_circular_border as _has_circular_border
 from backend.preprocessing.remove_circular_border import inscribed_square as _inscribed_square
+from backend.classifier.models import LesionIQHybrid
 
 
 ARTIFACT_FILENAMES = {
@@ -270,48 +271,11 @@ def get_display_image(image_path):
 
 
 # ===================================================================
-#  Stage 3a — Model (self-contained, no config.py dependency)
+#  Stage 3a — Model (uses canonical LesionIQHybrid from models.py)
 # ===================================================================
 
 def build_model(mode="full", checkpoint_path=None):
-    import timm
-
-    class LesionIQHybrid(nn.Module):
-        def __init__(self, num_classes=NUM_CLASSES, meta_dim=13, mode='full'):
-            super().__init__()
-            self.mode = mode
-            if mode in ('effnet_only', 'image_only', 'full'):
-                self.effnet = timm.create_model(
-                    'efficientnet_b4', pretrained=False, num_classes=0)
-            if mode in ('swin_only', 'image_only', 'full'):
-                self.swin = timm.create_model(
-                    'swinv2_base_window12to24_192to384.ms_in22k_ft_in1k',
-                    pretrained=False, num_classes=0)
-            if mode == 'full':
-                self.meta_mlp = nn.Sequential(
-                    nn.Linear(meta_dim, 64), nn.BatchNorm1d(64),
-                    nn.ReLU(), nn.Dropout(0.3),
-                    nn.Linear(64, 32), nn.ReLU(),
-                )
-            fusion_dim = {'effnet_only': 1792, 'swin_only': 1024,
-                          'image_only': 2816, 'full': 2848}[mode]
-            self.classifier = nn.Sequential(
-                nn.Linear(fusion_dim, 512), nn.BatchNorm1d(512),
-                nn.ReLU(), nn.Dropout(0.5),
-                nn.Linear(512, num_classes),
-            )
-
-        def forward(self, img, meta=None):
-            features = []
-            if self.mode in ('effnet_only', 'image_only', 'full'):
-                features.append(self.effnet(img))
-            if self.mode in ('swin_only', 'image_only', 'full'):
-                features.append(self.swin(img))
-            if self.mode == 'full' and meta is not None:
-                features.append(self.meta_mlp(meta))
-            return self.classifier(torch.cat(features, dim=1))
-
-    model = LesionIQHybrid(mode=mode).to(DEVICE)
+    model = LesionIQHybrid(mode=mode, pretrained=False).to(DEVICE)
     if checkpoint_path is None:
         checkpoint_path = str(CKPT_DIR / f"best_{mode}.pt")
     ckpt = torch.load(checkpoint_path, map_location=DEVICE, weights_only=False)

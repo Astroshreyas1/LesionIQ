@@ -92,7 +92,8 @@ synthetic_stylegan/
 # LoRA weights
 lora_weights/
 
-# Local secrets
+# Local secrets and config
 .env
 frontend/.env
 backend/.env
+backend/config.yaml

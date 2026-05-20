@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.cuda.amp import GradScaler, autocast
+
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.optim.swa_utils import AveragedModel, SWALR
 from torch.utils.data import DataLoader
@@ -151,7 +151,7 @@ def _train_one_epoch(
     loader: DataLoader,
     criterion: FocalLoss,
     optimizer: torch.optim.Optimizer,
-    scaler: GradScaler,
+    scaler: torch.amp.GradScaler,
     device: str,
 ) -> float:
     model.train()
@@ -172,7 +172,7 @@ def _train_one_epoch(
         else:
             mixed_images, labels_cut, lam = images, labels, 1.0
 
-        with autocast(enabled=USE_AMP):
+        with torch.amp.autocast("cuda", enabled=USE_AMP):
             output = model(mixed_images, meta)
             if isinstance(output, tuple):
                 logits, meta_aux = output
@@ -226,7 +226,7 @@ def _validate(
         meta   = meta.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
-        with autocast(enabled=USE_AMP):
+        with torch.amp.autocast("cuda", enabled=USE_AMP):
             # Multi-TTA: 4 predictions averaged
             def _forward(x):
                 out = model(x, meta)
@@ -290,7 +290,7 @@ def train(
     model = model.to(device)
     optimizer = build_optimizer(model)
     scheduler = CosineAnnealingLR(optimizer, T_max=COSINE_T_MAX)
-    scaler = GradScaler(enabled=USE_AMP)
+    scaler = torch.amp.GradScaler(enabled=USE_AMP)
 
     # Progressive unfreezing + SWA schedule:
     #   Epochs  1–15: Backbones frozen, head learns to fuse features

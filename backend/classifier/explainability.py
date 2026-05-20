@@ -28,7 +28,7 @@ from backend.classifier.config import (
     CONFIDENCE_THRESHOLD, NUM_EXPLAINABILITY_SAMPLES,
     SHAP_BACKGROUND_SAMPLES,
 )
-from backend.classifier.models import HybridClassifier
+from backend.classifier.models import LesionIQHybrid
 
 # =====================================================================
 #  1. Grad-CAM++  (EfficientNet-B4 branch)
@@ -37,7 +37,7 @@ from backend.classifier.models import HybridClassifier
 class _GradCAMPP:
     """Grad-CAM++ for a target convolutional layer."""
 
-    def __init__(self, model: HybridClassifier, target_layer: torch.nn.Module):
+    def __init__(self, model: LesionIQHybrid, target_layer: torch.nn.Module):
         self.model = model
         self.activations = None
         self.gradients = None
@@ -95,7 +95,7 @@ def _overlay_heatmap(image_np: np.ndarray, cam: np.ndarray, alpha: float = 0.5) 
 
 
 def generate_gradcam(
-    model: HybridClassifier,
+    model: LesionIQHybrid,
     loader: DataLoader,
     class_names: List[str],
     n_samples: int = NUM_EXPLAINABILITY_SAMPLES,
@@ -147,7 +147,7 @@ def generate_gradcam(
 #  2. Swin Attention Rollout
 # =====================================================================
 
-def _extract_swin_attention(model: HybridClassifier, image: torch.Tensor) -> List[np.ndarray]:
+def _extract_swin_attention(model: LesionIQHybrid, image: torch.Tensor) -> List[np.ndarray]:
     """Register hooks on every Swin attention layer and collect weights."""
     if model.mode not in ("hybrid", "swin"):
         return []
@@ -178,7 +178,7 @@ def _extract_swin_attention(model: HybridClassifier, image: torch.Tensor) -> Lis
 
 
 def generate_attention_maps(
-    model: HybridClassifier,
+    model: LesionIQHybrid,
     loader: DataLoader,
     class_names: List[str],
     n_samples: int = NUM_EXPLAINABILITY_SAMPLES,
@@ -241,7 +241,7 @@ def generate_attention_maps(
 # =====================================================================
 
 def generate_shap_analysis(
-    model: HybridClassifier,
+    model: LesionIQHybrid,
     loader: DataLoader,
     meta_feature_names: List[str],
     n_background: int = SHAP_BACKGROUND_SAMPLES,
@@ -311,7 +311,7 @@ def generate_shap_analysis(
 # =====================================================================
 
 def generate_calibration_curves(
-    model: HybridClassifier,
+    model: LesionIQHybrid,
     loader: DataLoader,
     class_names: List[str],
     device: str = DEVICE,
@@ -370,7 +370,7 @@ def generate_calibration_curves(
 # =====================================================================
 
 def generate_uncertainty_report(
-    model: HybridClassifier,
+    model: LesionIQHybrid,
     loader: DataLoader,
     class_names: List[str],
     threshold: float = CONFIDENCE_THRESHOLD,
@@ -425,7 +425,7 @@ def generate_uncertainty_report(
 # =====================================================================
 
 def run_explainability(
-    model: HybridClassifier,
+    model: LesionIQHybrid,
     test_loader: DataLoader,
     class_names: List[str],
     meta_feature_names: List[str],

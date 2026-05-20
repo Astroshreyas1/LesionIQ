@@ -24,7 +24,6 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.cuda.amp import autocast
 from sklearn.metrics import f1_score, roc_auc_score, classification_report
 from scipy.optimize import differential_evolution
 from sklearn.model_selection import StratifiedKFold
@@ -66,7 +65,7 @@ def get_all_probs(model, loader):
     for images, meta, labels in loader:
         images = images.to(DEVICE, non_blocking=True)
         meta = meta.to(DEVICE, non_blocking=True)
-        with autocast(enabled=USE_AMP):
+        with torch.amp.autocast("cuda", enabled=USE_AMP):
             def _fwd(x):
                 out = model(x, meta)
                 return out[0] if isinstance(out, tuple) else out

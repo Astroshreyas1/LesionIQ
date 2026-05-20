@@ -29,6 +29,7 @@ export function App() {
   const [uploadedPreviewUrl, setUploadedPreviewUrl] = useState<string | null>(null);
   const [analysisReady, setAnalysisReady] = useState(false);
   const [analysisPending, setAnalysisPending] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [uploadedCases, setUploadedCases] = useState<CaseRecord[]>([]);
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [uploadMetadata, setUploadMetadata] = useState<UploadMetadataInput>(defaultUploadMetadata);
@@ -71,6 +72,7 @@ export function App() {
     setScreen("review");
     setAnalysisReady(false);
     setAnalysisPending(true);
+    setAnalysisError(null);
 
     try {
       const caseRecord = await runLesionIQAnalysis({ image: uploadedImage, previewUrl: uploadedPreviewUrl, metadata });
@@ -81,6 +83,8 @@ export function App() {
         return null;
       });
       setAnalysisReady(true);
+    } catch (err) {
+      setAnalysisError(err instanceof Error ? err.message : "Analysis failed. Check that the backend is running.");
     } finally {
       setAnalysisPending(false);
     }
@@ -134,6 +138,7 @@ export function App() {
           uploadedPreviewUrl={uploadedPreviewUrl}
           analysisReady={analysisReady}
           analysisPending={analysisPending}
+          analysisError={analysisError}
           hasUploadedImage={hasUploadedImage}
           onNavigateExplainability={() => setScreen("explainability")}
           onImageSelected={handleImageSelected}

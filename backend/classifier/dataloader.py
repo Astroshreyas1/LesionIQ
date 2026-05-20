@@ -10,16 +10,13 @@ import torch
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
+from backend.classifier.config import NUM_WORKERS, TRAIN_CSV, VAL_CSV, TEST_CSV
 
 
 # ─────────────────────────────────────────────────────────────
-# 🔥 🔥 🔥 SECTION 1: FILL IN YOUR PATHS HERE 🔥 🔥 🔥
-# ─────────────────────────────────────────────────────────────
-IMAGE_DIR = r"" # Unused now because image_path is absolute
-
-TRAIN_CSV = r"path/to/LesionIQ/layer0_train.csv"
-VAL_CSV   = r"path/to/LesionIQ/layer0_val.csv"
-TEST_CSV  = r"path/to/LesionIQ/test set/final/layer0_test.csv"
+# Paths are loaded from backend/config.yaml via config.py.
+# Override with env vars: LESIONIQ_TRAIN_CSV, LESIONIQ_VAL_CSV, LESIONIQ_TEST_CSV
+IMAGE_DIR = ""  # Unused — image_path column in CSVs is absolute
 
 
 # ─────────────────────────────────────────────────────────────
@@ -115,7 +112,7 @@ class LesionDataset(Dataset):
         return image, meta, label
 
 
-def get_dataloaders(batch_size=32, num_workers=0):
+def get_dataloaders(batch_size=32, num_workers=NUM_WORKERS):
     train_dataset = LesionDataset(TRAIN_CSV, IMAGE_DIR, transform=TRAIN_TRANSFORMS)
     val_dataset   = LesionDataset(VAL_CSV,   IMAGE_DIR, transform=VAL_TRANSFORMS)
     test_dataset  = LesionDataset(TEST_CSV,  IMAGE_DIR, transform=VAL_TRANSFORMS)

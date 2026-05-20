@@ -17,7 +17,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.cuda.amp import autocast
 from sklearn.metrics import f1_score, roc_auc_score, classification_report
 from scipy.optimize import minimize
 from backend.classifier.config import DEVICE, NUM_CLASSES, USE_AMP, OUTPUT_DIR, BATCH_SIZE
@@ -61,7 +60,7 @@ def get_all_probs(model, loader):
         images = images.to(DEVICE, non_blocking=True)
         meta   = meta.to(DEVICE, non_blocking=True)
         
-        with autocast(enabled=USE_AMP):
+        with torch.amp.autocast("cuda", enabled=USE_AMP):
             # 4-way TTA
             def _fwd(x):
                 out = model(x, meta)
@@ -277,7 +276,7 @@ def calibrate_temperature(model, val_loader):
         for images, meta, labels in val_loader:
             images = images.to(DEVICE)
             meta = meta.to(DEVICE)
-            with autocast(enabled=USE_AMP):
+            with torch.amp.autocast("cuda", enabled=USE_AMP):
                 output = model(images, meta)
                 logits = output[0] if isinstance(output, tuple) else output
             all_logits.append(logits.cpu())

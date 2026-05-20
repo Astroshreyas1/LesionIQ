@@ -21,7 +21,6 @@ import numpy as np
 import seaborn as sns
 import torch
 import torch.nn.functional as F
-from torch.cuda.amp import autocast
 from torch.utils.data import DataLoader
 from sklearn.metrics import (
     accuracy_score, f1_score, precision_score, recall_score,
@@ -30,13 +29,13 @@ from sklearn.metrics import (
 )
 
 from backend.classifier.config import DEVICE, USE_AMP, OUTPUT_DIR, NUM_CLASSES, CONFIDENCE_THRESHOLD
-from backend.classifier.models import HybridClassifier
+from backend.classifier.models import LesionIQHybrid
 
 # ── Collect predictions ──────────────────────────────────────
 
 @torch.no_grad()
 def _gather_predictions(
-    model: HybridClassifier,
+    model: LesionIQHybrid,
     loader: DataLoader,
     device: str = DEVICE,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -48,7 +47,7 @@ def _gather_predictions(
         images = images.to(device, non_blocking=True)
         meta   = meta.to(device, non_blocking=True)
 
-        with autocast(enabled=USE_AMP):
+        with torch.amp.autocast("cuda", enabled=USE_AMP):
             logits, _ = model(images, meta)
 
         probs_list.append(F.softmax(logits, dim=1).cpu().numpy())
@@ -99,7 +98,7 @@ def _plot_confusion_matrix(
 # ── Main evaluation entry point ──────────────────────────────
 
 def evaluate(
-    model: HybridClassifier,
+    model: LesionIQHybrid,
     test_loader: DataLoader,
     class_names: List[str],
     device: str = DEVICE,

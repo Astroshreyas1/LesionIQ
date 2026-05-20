@@ -31,6 +31,9 @@ opencv-python-headless>=4.5  # Image I/O and preprocessing
 scikit-learn>=1.1            # F1, AUC, classification reports, stratified splits
 scipy>=1.7                   # Nelder-Mead threshold optimization
 
+# --- Configuration --------------------------------------------
+pyyaml>=6.0                  # backend/config.yaml loader
+
 # --- Visualization & logging ----------------------------------
 matplotlib>=3.5
 seaborn>=0.12                # Confusion matrix heatmaps

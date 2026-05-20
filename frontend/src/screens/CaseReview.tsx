@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Download, Loader2 } from "lucide-react";
+import { AlertTriangle, Download, Loader2 } from "lucide-react";
 import type { CaseRecord, OverlayMode, UploadMetadataInput } from "../types/lesioniq";
 import { pct } from "../lib/format";
 import { resolveLesionIQArtifactUrl } from "../lib/lesioniqApi";
@@ -15,6 +15,7 @@ export function CaseReview({
   uploadedPreviewUrl,
   analysisReady,
   analysisPending,
+  analysisError,
   hasUploadedImage,
   onNavigateExplainability,
   onImageSelected,
@@ -28,6 +29,7 @@ export function CaseReview({
   uploadedPreviewUrl: string | null;
   analysisReady: boolean;
   analysisPending: boolean;
+  analysisError: string | null;
   hasUploadedImage: boolean;
   onNavigateExplainability: () => void;
   onImageSelected: (file: File, metadata?: UploadMetadataInput) => void;
@@ -74,6 +76,28 @@ export function CaseReview({
           <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-clinical-raised">
             <div className="h-full w-1/2 animate-[pulse_1.4s_ease-in-out_infinite] rounded-full bg-clinical-accent" />
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (analysisError) {
+    return (
+      <div className="grid min-h-[calc(100vh-120px)] place-items-center">
+        <div className="w-full max-w-2xl rounded-clinical border border-clinical-danger/40 bg-clinical-surface p-6 text-center shadow-clinical">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full border border-clinical-danger/40 bg-clinical-danger/10 text-clinical-danger">
+            <AlertTriangle className="h-7 w-7" aria-hidden="true" />
+          </div>
+          <p className="mt-5 text-xs font-semibold uppercase tracking-[0.14em] text-clinical-muted">Analysis failed</p>
+          <h1 className="mt-2 text-2xl font-semibold text-clinical-ink">Could not complete analysis</h1>
+          <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-clinical-muted">{analysisError}</p>
+          <button
+            type="button"
+            onClick={() => onRunAnalysis(uploadMetadata)}
+            className="mt-5 rounded-md border border-clinical-accent bg-clinical-accent px-4 py-2 text-sm font-semibold text-clinical-canvas outline-none transition hover:bg-clinical-accentHover focus-visible:ring-2 focus-visible:ring-clinical-accent/50"
+          >
+            Retry analysis
+          </button>
         </div>
       </div>
     );

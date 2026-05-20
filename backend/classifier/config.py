@@ -1,20 +1,43 @@
 """
 LesionIQ Hybrid Classifier — Shared Configuration
 ===================================================
-Edit the placeholder paths and hyper-parameters below before running.
+Paths are loaded from backend/config.yaml.  Environment variables
+(LESIONIQ_TRAIN_CSV, LESIONIQ_VAL_CSV, etc.) override the YAML values.
+Hyperparameters below are edit-in-place.
 """
 
+import os
 from pathlib import Path
 
 import torch
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
-# ── Data paths (EDIT THESE) ──────────────────────────────────
-TRAIN_IMG_DIR = r"path/to/LesionIQ/Segregated"       # per-class subfolders
-TEST_IMG_DIR  = r"path/to/LesionIQ/Test"              # per-class subfolders
-METADATA_CSV  = r"path/to/LesionIQ/metadata.csv"      # isic_id, age_approx, sex, region, disease-class
-OUTPUT_DIR    = str(BACKEND_ROOT / "output")  # checkpoints, logs, reports
+# ── Load config.yaml ─────────────────────────────────────────
+_CONFIG_PATH = BACKEND_ROOT / "config.yaml"
+_yaml_cfg: dict = {}
+try:
+    import yaml
+    if _CONFIG_PATH.exists():
+        with open(_CONFIG_PATH) as _f:
+            _yaml_cfg = yaml.safe_load(_f) or {}
+except ImportError:
+    pass
+
+
+def _cfg(key: str, env_key: str, default: str) -> str:
+    """Resolve a config value: env var > config.yaml > default."""
+    return os.environ.get(env_key, _yaml_cfg.get(key, default))
+
+
+# ── Data paths (config.yaml → env override) ──────────────────
+TRAIN_CSV     = _cfg("train_csv",     "LESIONIQ_TRAIN_CSV",     "path/to/LesionIQ/layer0_train.csv")
+VAL_CSV       = _cfg("val_csv",       "LESIONIQ_VAL_CSV",       "path/to/LesionIQ/layer0_val.csv")
+TEST_CSV      = _cfg("test_csv",      "LESIONIQ_TEST_CSV",      "path/to/LesionIQ/test set/final/layer0_test.csv")
+TRAIN_IMG_DIR = _cfg("train_img_dir", "LESIONIQ_TRAIN_IMG_DIR", "path/to/LesionIQ/Segregated")
+TEST_IMG_DIR  = _cfg("test_img_dir",  "LESIONIQ_TEST_IMG_DIR",  "path/to/LesionIQ/Test")
+METADATA_CSV  = _cfg("metadata_csv",  "LESIONIQ_METADATA_CSV",  "path/to/LesionIQ/metadata.csv")
+OUTPUT_DIR    = _cfg("output_dir",    "LESIONIQ_OUTPUT_DIR",    "") or str(BACKEND_ROOT / "output")
 
 # ── Metadata column names ────────────────────────────────────
 META_ID_COL     = "isic_id"
