@@ -1,6 +1,7 @@
 import { memo } from "react";
 import type { OverlayMode, PreprocessingStep } from "../../types/lesioniq";
 import { cx } from "../../lib/format";
+import { useProxiedImage } from "../../hooks/useProxiedImage";
 
 interface DermoscopyMockProps {
   overlay?: OverlayMode;
@@ -14,6 +15,8 @@ interface DermoscopyMockProps {
 }
 
 export const DermoscopyMock = memo(function DermoscopyMock({ overlay = "raw", stepTone = "raw", compact = false, square = false, label, imageUrl, objectFit = "cover", className }: DermoscopyMockProps) {
+  const proxiedUrl = useProxiedImage(imageUrl);
+
   return (
     <div
       className={cx(
@@ -24,8 +27,12 @@ export const DermoscopyMock = memo(function DermoscopyMock({ overlay = "raw", st
       aria-label={label ?? `Dermoscopy preview ${overlay}`}
       role="img"
     >
-      {imageUrl ? (
-        <img src={imageUrl} alt="" className={cx("h-full w-full", objectFit === "contain" ? "object-contain" : "object-cover")} />
+      {proxiedUrl ? (
+        <img src={proxiedUrl} alt="" className={cx("h-full w-full", objectFit === "contain" ? "object-contain" : "object-cover")} />
+      ) : imageUrl ? (
+        <div className="flex h-full w-full items-center justify-center">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-clinical-accent border-t-transparent" />
+        </div>
       ) : (
         <div className={cx("dermoscopy-lesion", `tone-${stepTone}`)} />
       )}

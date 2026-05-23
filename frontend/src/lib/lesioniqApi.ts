@@ -31,6 +31,7 @@ export async function runLesionIQAnalysis({ image, metadata }: AnalyzeCaseInput)
 
   const response = await fetch(`${apiBaseUrl || "/api"}/cases/analyze`, {
     method: "POST",
+    headers: { "ngrok-skip-browser-warning": "true" },
     body: payload
   });
 

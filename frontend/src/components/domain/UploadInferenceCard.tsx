@@ -1,5 +1,6 @@
 import { FileImage, UploadCloud } from "lucide-react";
 import type { CaseRecord, ModelMode, UploadMetadataInput } from "../../types/lesioniq";
+import { useProxiedImage } from "../../hooks/useProxiedImage";
 import { Card } from "../primitives/Card";
 import { StatusBadge } from "../primitives/StatusBadge";
 
@@ -40,6 +41,7 @@ export function UploadInferenceCard({
   onUploadMetadataChange
 }: UploadInferenceCardProps) {
   const hasUploadedImage = Boolean(uploadedImage || uploadedPreviewUrl || caseRecord?.uploadedImageUrl);
+  const proxiedCaseImage = useProxiedImage(caseRecord?.uploadedImageUrl);
   const metadataComplete = uploadMetadata.ageYears !== null && uploadMetadata.sex !== "Unknown" && uploadMetadata.anatomicalSite !== "unknown" && uploadMetadata.anatomicalSite.trim().length > 0;
   const canRunAnalysis = Boolean(uploadedImage && uploadedPreviewUrl && metadataComplete);
   const recommendationLabel = analysisReady ? "Analyzed" : hasUploadedImage && metadataComplete ? "Ready to analyze" : hasUploadedImage ? "Complete metadata" : "Pending";
@@ -154,8 +156,8 @@ export function UploadInferenceCard({
               event.currentTarget.value = "";
             }}
           />
-          {uploadedPreviewUrl || caseRecord?.uploadedImageUrl ? (
-            <img src={uploadedPreviewUrl ?? caseRecord?.uploadedImageUrl} alt="Uploaded dermoscopy preview" className="h-full w-full rounded-md object-cover" />
+          {uploadedPreviewUrl || proxiedCaseImage ? (
+            <img src={uploadedPreviewUrl ?? proxiedCaseImage} alt="Uploaded dermoscopy preview" className="h-full w-full rounded-md object-cover" />
           ) : (
             <>
               <UploadCloud className="h-8 w-8 text-clinical-accent" aria-hidden="true" />
