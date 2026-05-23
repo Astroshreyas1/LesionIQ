@@ -54,13 +54,32 @@ function sanitizeSlmText(summary: string): string {
 
 function reasoningLines(caseRecord: CaseRecord): string[] {
   const slmReasoning = sanitizeSlmText(caseRecord.explainability.slmSummary);
-  const lines = [
-    slmReasoning ||
-      `The model identified this lesion as ${caseRecord.predictedClassLabel} with ${confidenceLevel(caseRecord.calibratedConfidence)} confidence.`,
-    `Primary visual evidence: ${caseRecord.explainability.gradcamSummary}`,
-    `Swin Transformer attention: ${caseRecord.explainability.attentionSummary}`,
-    caseRecord.recommendation
-  ];
+  const lines: string[] = [];
+
+  // The SLM output IS the reasoning — present it first if available
+  if (slmReasoning && !slmReasoning.toLowerCase().includes("pending")) {
+    lines.push(slmReasoning);
+  } else {
+    // Structured fallback when SLM is unavailable
+    const conf = Math.round(caseRecord.calibratedConfidence * 100);
+    const level = conf >= 75 ? "high" : conf >= 50 ? "moderate" : "low";
+    lines.push(
+      `The model favours ${caseRecord.predictedClassLabel} (${caseRecord.predictedClassCode}) ` +
+      `at ${conf}% ${level} confidence. ` +
+      `${caseRecord.recommendation}`
+    );
+  }
+
+  // Only add spatial summaries if they contain real data (not generic boilerplate)
+  const gcSummary = caseRecord.explainability.gradcamSummary;
+  if (gcSummary && !gcSummary.includes("highlights the EfficientNet")) {
+    lines.push(`Spatial evidence (Grad-CAM++): ${gcSummary}`);
+  }
+
+  const atSummary = caseRecord.explainability.attentionSummary;
+  if (atSummary && !atSummary.includes("Graded attention weights summarize")) {
+    lines.push(`Spatial evidence (SwinV2): ${atSummary}`);
+  }
 
   return lines.filter(Boolean);
 }

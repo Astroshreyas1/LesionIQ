@@ -653,29 +653,92 @@ def build_slm_payload(diagnosis, gradcam_summary=None, attention_summary=None, m
 
 def build_slm_prompt(payload):
     """Strict report prompt for Gemma/Ollama."""
+    pred = payload.get("prediction", {})
+    top3 = payload.get("top3", [])
+    hints = payload.get("feature_hints", {})
+    gradcam = payload.get("gradcam", {})
+    attention = payload.get("attention", {})
+    metadata = payload.get("metadata", {})
+    flags = payload.get("clinical_flags", {})
+
+    # Pre-compute descriptive context so the LLM reasons over specifics
+    class_label = pred.get("class_label", "Unknown")
+    class_code = pred.get("class_code", "NA")
+    conf = pred.get("confidence_pct", 0)
+    conf_level = pred.get("confidence_level", "low")
+    threshold = pred.get("threshold", 0.5)
+    margin = pred.get("threshold_margin", 0)
+    is_mal = pred.get("is_malignant", False)
+
+    alternatives = ", ".join(
+        f"{t.get('full_name', t.get('class', '?'))} ({round(t.get('probability', 0) * 100, 1)}%)"
+        for t in top3[1:3]
+    ) if len(top3) > 1 else "none above 5%"
+
+    gc_region = gradcam.get("region", "not available")
+    gc_area = gradcam.get("area_pct")
+    at_region = attention.get("region", "not available")
+    alignment = hints.get("evidence_alignment", "unknown")
+    primary_feat = hints.get("primary_feature", "non-specific localisation")
+    uncertainty = hints.get("uncertainty_flags") or []
+    clinical_ctx = hints.get("clinical_context", "metadata non-contributory")
+
+    age = metadata.get("age") or metadata.get("ageYears") or "unknown"
+    sex = metadata.get("sex") or "unknown"
+    site = metadata.get("site") or metadata.get("anatomicalSite") or "unknown"
+    mal_total = flags.get("malignant_total_prob")
+
     return (
-        "You are a concise clinical dermatology reviewer embedded in LesionIQ. "
-        "Write preliminary physician-facing analysis from the supplied evidence packet only.\n\n"
-        "Rules:\n"
-        "- Explain why the model leaned toward the predicted class; do not merely restate it.\n"
-        "- Use dermoscopic terms only when supported by feature_hints or attribution summaries.\n"
-        "- Do not recommend treatment, biopsy, discharge, or reassurance as a directive.\n"
-        "- If feature_hints.evidence_alignment is discordant, explicitly state that certainty is reduced.\n"
-        "- If area_pct or peak_pixel is null, omit those measurements.\n"
-        "- Keep the EVIDENCE section to five concise clinical sentences.\n\n"
+        "You are an expert clinical dermatology reviewer inside LesionIQ. "
+        "Write a preliminary physician-facing reasoning report. "
+        "Your audience is a physician who can ALREADY see the Grad-CAM overlay, "
+        "the attention heatmap, and the predicted class. Do NOT restate what they see. "
+        "Instead, EXPLAIN the reasoning: why the evidence supports (or challenges) the "
+        "predicted diagnosis, what the spatial patterns suggest dermoscopically, and "
+        "where the model's confidence may be unreliable.\n\n"
+
+        "SPECIFIC EVIDENCE TO REASON OVER:\n"
+        f"• Prediction: {class_label} ({class_code}) at {conf}% ({conf_level} confidence)\n"
+        f"• Threshold: {threshold} — margin {'+' if margin >= 0 else ''}{round(margin * 100, 1)} pts\n"
+        f"• Malignant flag: {'yes' if is_mal else 'no'}"
+        f"{f' (combined malignant probability {round(mal_total * 100, 1)}%)' if mal_total else ''}\n"
+        f"• Closest differentials: {alternatives}\n"
+        f"• Grad-CAM++ peak region: {gc_region}"
+        f"{f' covering {gc_area}% of image' if gc_area else ''}\n"
+        f"• SwinV2 attention peak: {at_region}\n"
+        f"• Evidence alignment between branches: {alignment}\n"
+        f"• Inferred primary feature: {primary_feat}\n"
+        f"• Patient: age {age}, sex {sex}, site {site}\n"
+        f"• Clinical context: {clinical_ctx}\n"
+        f"• Uncertainty flags: {', '.join(uncertainty) if uncertainty else 'none'}\n\n"
+
+        "REASONING REQUIREMENTS:\n"
+        "1. Start with the key question: WHY does this pattern look like the predicted class? "
+        "Reference spatial evidence (where the heatmap focuses and what that could mean dermoscopically).\n"
+        "2. If the two branches (Grad-CAM, SwinV2) disagree, explain what that implies for confidence.\n"
+        "3. Discuss the differential: why the predicted class wins over the closest alternative, "
+        "or why the margin is uncomfortably narrow.\n"
+        "4. Use age/sex/site ONLY if they materially affect the reasoning (e.g., sun-exposed site "
+        "for actinic keratosis, young female torso for benign nevi).\n"
+        "5. End with an honest uncertainty note: what the physician should look for on dermoscopy "
+        "that the model cannot assess.\n\n"
+
+        "FORBIDDEN:\n"
+        "- Do not recommend biopsy, treatment, discharge, or reassurance as a directive.\n"
+        "- Do not fabricate dermoscopic features not supported by the supplied evidence.\n"
+        "- Do not restate the prediction, confidence, or threshold — the physician already has those.\n\n"
+
         "Return exactly this schema:\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "LESIONIQ CLINICAL EXPLAINABILITY REPORT\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "PREDICTION\n"
-        "  Diagnosis   : <class label> (<class code>)\n"
-        "  Confidence  : <confidence_pct>% (<high/moderate/low confidence>)\n"
-        "  Threshold   : <threshold> (tuned — default 0.50)\n\n"
+        f"  Diagnosis   : {class_label} ({class_code})\n"
+        f"  Confidence  : {conf}% ({conf_level} confidence)\n"
+        f"  Threshold   : {threshold} (tuned — default 0.50)\n\n"
         "EVIDENCE\n"
-        "  <five concise sentences for a physician, grounded in prediction, Grad-CAM++, "
-        "SwinV2 attention, feature hints, uncertainty flags, and metadata context.>\n\n"
-        "Evidence packet JSON:\n"
-        f"{json.dumps(payload, sort_keys=True)}"
+        "  <five to seven sentences of clinical reasoning as described above>\n\n"
+        f"Evidence packet JSON:\n{json.dumps(payload, sort_keys=True)}"
     )
 
 
@@ -684,33 +747,109 @@ def _fallback_slm_report(payload):
     hints = payload.get("feature_hints", {})
     gradcam = payload.get("gradcam", {})
     attention = payload.get("attention", {})
+    top3 = payload.get("top3", [])
+    flags = payload.get("clinical_flags", {})
+    metadata = payload.get("metadata", {})
     alignment = hints.get("evidence_alignment", "partially_aligned")
     uncertainty = hints.get("uncertainty_flags") or []
 
-    evidence = [
-        f"The model leans toward {pred.get('class_label', 'the top class')} because the calibrated probability is {pred.get('confidence_pct', 0)}% with {pred.get('confidence_level', 'low')} confidence.",
-        f"Grad-CAM++ localizes support to the {gradcam.get('region', 'lesion region')}, best summarized as {hints.get('primary_feature', 'non-specific localisation')}.",
-        f"SwinV2 attention is strongest over the {attention.get('region', 'lesion region')}.",
-    ]
-    if alignment == "discordant":
-        evidence.append("The Grad-CAM++ and attention evidence is not fully aligned, which reduces certainty.")
+    class_label = pred.get("class_label", "the top class")
+    class_code = pred.get("class_code", "NA")
+    conf_pct = pred.get("confidence_pct", 0)
+    conf_level = pred.get("confidence_level", "low")
+    threshold = pred.get("threshold", 0.5)
+    is_mal = pred.get("is_malignant", False)
+
+    gc_region = gradcam.get("region", "not available")
+    gc_area = gradcam.get("area_pct")
+    at_region = attention.get("region", "not available")
+    primary_feat = hints.get("primary_feature", "non-specific localisation")
+    clinical_ctx = hints.get("clinical_context", "metadata non-contributory")
+
+    # Build reasoning paragraphs
+    evidence = []
+
+    # 1. WHY this class — spatial reasoning
+    spatial = f"The model favours {class_label} because "
+    if gradcam.get("available") and gc_region != "not available":
+        spatial += f"Grad-CAM++ activation concentrates on the {gc_region}"
+        if gc_area:
+            spatial += f" ({gc_area}% coverage)"
+        spatial += f", suggesting the key discriminative signal is {primary_feat}."
     else:
-        evidence.append("The Grad-CAM++ and attention maps broadly reinforce the same diagnostic region.")
-    context = hints.get("clinical_context", "metadata non-contributory")
+        spatial += f"the calibrated probability of {conf_pct}% exceeds the class threshold, though spatial evidence was not generated for this mode."
+    evidence.append(spatial)
+
+    # 2. Branch agreement
+    if gradcam.get("available") and attention.get("available"):
+        if alignment == "aligned":
+            evidence.append(
+                f"Both EfficientNet (Grad-CAM++) and SwinV2 (attention) branches converge on the {gc_region}, "
+                "providing corroborative spatial support for the predicted class."
+            )
+        elif alignment == "discordant":
+            evidence.append(
+                f"The EfficientNet branch highlights the {gc_region} while SwinV2 attention peaks at the "
+                f"{at_region} — this discordance reduces diagnostic certainty and warrants closer dermoscopic inspection."
+            )
+        else:
+            evidence.append(
+                f"The two branches show partial overlap: Grad-CAM++ peaks at the {gc_region} and "
+                f"SwinV2 at the {at_region}; the evidence is not fully convergent."
+            )
+
+    # 3. Differential context
+    if len(top3) > 1:
+        alt = top3[1]
+        alt_name = alt.get("full_name", alt.get("class", "?"))
+        alt_prob = round(alt.get("probability", 0) * 100, 1)
+        margin = conf_pct - alt_prob
+        if margin < 15:
+            evidence.append(
+                f"The closest differential is {alt_name} at {alt_prob}% — only {round(margin, 1)} pts below the "
+                f"primary prediction. This narrow separation means clinical correlation is especially important."
+            )
+        else:
+            evidence.append(
+                f"The nearest alternative, {alt_name} ({alt_prob}%), trails by {round(margin, 1)} pts, "
+                "providing reasonable separation from the primary prediction."
+            )
+
+    # 4. Malignancy flag + metadata
+    if is_mal:
+        mal_note = f"The lesion classifies as malignant"
+        mal_total = flags.get("malignant_total_prob")
+        if mal_total:
+            mal_note += f" with a combined malignant probability of {round(mal_total * 100, 1)}%"
+        mal_note += "."
+        if clinical_ctx != "metadata non-contributory":
+            mal_note += f" Metadata context: {clinical_ctx}."
+        evidence.append(mal_note)
+    elif clinical_ctx != "metadata non-contributory":
+        evidence.append(f"Clinical context: {clinical_ctx}.")
+
+    # 5. Uncertainty + verification
     if uncertainty:
-        context = f"{context}; uncertainty flags include {', '.join(uncertainty)}"
-    evidence.append(
-        f"Metadata context is {context}; this remains decision support and requires qualified clinician verification."
-    )
+        evidence.append(
+            f"Uncertainty flags raised: {', '.join(f.replace('_', ' ') for f in uncertainty)}. "
+            "Clinician should verify with direct dermoscopic examination of structural features "
+            "(pigment network, vascular patterns, symmetry) that the model cannot reliably assess."
+        )
+    else:
+        evidence.append(
+            "No specific uncertainty flags were raised, but clinician verification remains required — "
+            "the model does not assess dermoscopic structures such as pigment network regularity, "
+            "vascular patterns, or ulceration directly."
+        )
 
     return (
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "LESIONIQ CLINICAL EXPLAINABILITY REPORT\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "PREDICTION\n"
-        f"  Diagnosis   : {pred.get('class_label', 'Unknown')} ({pred.get('class_code', 'NA')})\n"
-        f"  Confidence  : {pred.get('confidence_pct', 0)}% ({pred.get('confidence_level', 'low')} confidence)\n"
-        f"  Threshold   : {pred.get('threshold', 0.5)} (tuned — default 0.50)\n\n"
+        f"  Diagnosis   : {class_label} ({class_code})\n"
+        f"  Confidence  : {conf_pct}% ({conf_level} confidence)\n"
+        f"  Threshold   : {threshold} (tuned — default 0.50)\n\n"
         "EVIDENCE\n"
         f"  {' '.join(evidence)}"
     )

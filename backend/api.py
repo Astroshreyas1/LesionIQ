@@ -323,7 +323,7 @@ async def _generate_slm_summary(
     artifact_paths: dict[str, str],
     metadata: dict[str, Any],
 ) -> tuple[str, str]:
-    from classifier.inference import (
+    from backend.classifier.inference import (
         build_slm_payload,
         build_slm_prompt,
         validate_and_repair_slm_output,
@@ -349,20 +349,29 @@ async def _generate_slm_summary(
     ]
     prompt = build_slm_prompt(slm_payload)
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=180) as client:
+            message_content = [{"type": "text", "text": prompt}]
+            for img_b64 in images:
+                message_content.insert(0, {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{img_b64}"},
+                })
             response = await client.post(
-                f"{base_url}/api/generate",
+                f"{base_url}/api/chat",
                 json={
                     "model": model,
-                    "prompt": prompt,
-                    "images": images,
+                    "messages": [
+                        {"role": "user", "content": prompt, "images": images},
+                    ],
                     "stream": False,
-                    "options": {"temperature": 0.1, "top_p": 0.85},
+                    "options": {"temperature": 0.3, "top_p": 0.9, "num_predict": 1024},
                 },
             )
             response.raise_for_status()
             payload = response.json()
-            text = str(payload.get("response", "")).strip()
+            text = str(
+                payload.get("message", {}).get("content", "")
+            ).strip()
             if text:
                 return validate_and_repair_slm_output(text, slm_payload), "Generated"
     except Exception as exc:
@@ -404,6 +413,34 @@ def _audit_checks(metadata_complete: bool, slm_status: str) -> list[dict[str, st
             "note": "gemma3:4b-it-qat receives image artifacts plus diagnosis metadata through the backend.",
         },
     ]
+
+
+def _heatmap_summary_text(
+    diagnosis: dict[str, Any], key: str, branch_name: str
+) -> str:
+    """Build a human-readable spatial summary from heatmap analytics."""
+    expl = diagnosis.get("explainability", {})
+    summary = expl.get(f"{key}_summary") or {}
+    if not isinstance(summary, dict) or not summary.get("available"):
+        return f"{branch_name} was not generated for this inference mode."
+    region = summary.get("region", "lesion region")
+    area = summary.get("area_pct")
+    peak = summary.get("peak_pixel")
+    desc = f"{branch_name} concentrates on the {region}"
+    if area is not None:
+        desc += f", activating {area}% of the image area"
+    if peak is not None:
+        desc += f" (peak at pixel {peak[0]}, {peak[1]})"
+    desc += "."
+    return desc
+
+
+def _gradcam_summary_text(diagnosis: dict[str, Any]) -> str:
+    return _heatmap_summary_text(diagnosis, "gradcam", "Grad-CAM++")
+
+
+def _attention_summary_text(diagnosis: dict[str, Any]) -> str:
+    return _heatmap_summary_text(diagnosis, "attention", "SwinV2 attention")
 
 
 def _case_record(
@@ -487,8 +524,8 @@ def _case_record(
         ],
         "predictionScores": scores,
         "explainability": {
-            "gradcamSummary": "Grad-CAM highlights the EfficientNet image regions supporting the top class.",
-            "attentionSummary": "Graded attention weights summarize Swin branch spatial attribution for the predicted class.",
+            "gradcamSummary": _gradcam_summary_text(diagnosis),
+            "attentionSummary": _attention_summary_text(diagnosis),
             "metadataSignals": _metadata_signals(
                 diagnosis.get("explainability", {}).get("shap_metadata")
             ),
