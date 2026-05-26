@@ -45,6 +45,8 @@ LesionIQ/
 │   └── CONTEXT_HANDOFF.md      # Frontend dev handoff context
 ├── scripts/                    # Utility scripts (version-controlled)
 ├── output/                     # Generated inference bundles (git-ignored)
+├── backend/
+│   └── config.yaml.example     # ← copy to config.yaml and fill in your paths
 ├── docker-compose.yml
 ├── .dockerignore
 ├── README.md
@@ -52,7 +54,7 @@ LesionIQ/
 └── .gitignore
 ```
 
-Generated folders such as `node_modules/`, `frontend/dist/`, `output/`, `backend/output/`, caches, and local `.env` files are ignored. Large checkpoint weights (`backend/checkpoints/*.pt`, `*.pth`) should be stored outside git or supplied separately.
+Generated folders such as `node_modules/`, `frontend/dist/`, `output/`, `backend/output/`, caches, and local `.env` files are ignored. Large checkpoint weights (`backend/checkpoints/*.pt`, `*.pth`) should be stored outside git or supplied separately. `backend/config.yaml` (your local path config) is also git-ignored — only the `.example` template is tracked.
 
 ---
 
@@ -96,9 +98,9 @@ LesionIQ/backend/
 ├── Dockerfile               # Python 3.11-slim container for uvicorn serving
 │
 ├── classifier/              # Core classification pipeline
-│   ├── config.py            # Hyperparameters and paths
-│   ├── models.py            # LesionIQHybrid architecture
-│   ├── dataloader.py        # Dataset, augmentations, weighted sampling
+│   ├── config.py            # Hyperparameters; loads paths from backend/config.yaml (env vars override)
+│   ├── models.py            # LesionIQHybrid architecture (pretrained param for inference vs training)
+│   ├── dataloader.py        # Dataset, augmentations, weighted sampling; CSV paths from config.py
 │   ├── train.py             # Training loop (CutMix, SWA, 4-way TTA, progressive unfreezing)
 │   ├── evaluate.py          # Test-set evaluation suite
 │   ├── explainability.py    # Grad-CAM++, SHAP, attention maps, calibration
@@ -109,7 +111,7 @@ LesionIQ/backend/
 │   ├── boost_f1_v3.py       # Confusion matrix reframe: BCC suppress + SCC boost + MEL safety
 │   ├── fix_swa.py           # SWA BN recovery for metadata-mode models (one-shot utility)
 │   ├── run_ablation.py      # Automated 4-experiment ablation runner
-│   └── train_classifier.py  # CLI entry point
+│   └── train_classifier.py  # CLI entry point (train / eval-only / fix-swa)
 │
 ├── preprocessing/           # Image preprocessing & cleanup
 │   ├── __init__.py                  # Public API: run_pipeline() for inference
@@ -144,6 +146,7 @@ LesionIQ/backend/
 │   ├── optimal_temperature.npy  # Calibrated temperature
 │   └── mel_safety_threshold.npy # MEL recall safety threshold (0.265)
 │
+├── config.yaml.example      # Path config template — copy to config.yaml and edit
 ├── requirements.txt
 └── .gitignore
 ```
@@ -259,6 +262,8 @@ backend API: http://localhost:8000
 Ollama:      http://localhost:11434
 model:       gemma3:4b-it-qat
 ```
+
+> The `ollama` service has a healthcheck — the backend and `ollama-pull` services wait for Ollama to be ready before starting, rather than relying on a fixed sleep timer.
 
 Build the production bundle:
 ```bash
@@ -399,7 +404,7 @@ backend/output/inference/<case_id>/
 ### Data Setup
 1. Download [ISIC 2019 Training Data](https://challenge.isic-archive.com/data/#2019)
 2. Run Layer 0 preprocessing to create `layer0_train.csv`, `layer0_val.csv`, `layer0_test.csv`
-3. Update paths in `backend/classifier/config.py` and `backend/classifier/dataloader.py`
+3. Copy the config template and fill in your paths (see [Machine Transfer → Step 3](#3-configure-paths-via-configyaml) below)
 
 ### Training
 ```bash
@@ -532,15 +537,42 @@ python scripts/download_checkpoints.py
 
 Or download manually from the [GitHub Releases](https://github.com/Astroshreyas1/LesionIQ/releases/tag/v1.0-checkpoints) page and place files in `backend/checkpoints/`.
 
-### 3. Update data paths
-Edit `backend/classifier/dataloader.py` lines 20–22:
-```python
-TRAIN_CSV = "path/to/data/layer0_train.csv"
-VAL_CSV   = "path/to/data/layer0_val.csv"
-TEST_CSV  = "path/to/data/layer0_test.csv"
+### 3. Configure paths via config.yaml
+
+All data paths are now centralized in `backend/config.yaml`. Copy the template and fill in your paths:
+
+```bash
+# macOS / Linux
+cp backend/config.yaml.example backend/config.yaml
+
+# Windows
+copy backend\config.yaml.example backend\config.yaml
 ```
 
-Then fix `image_path` column in each CSV to point to the actual image directory on the new machine:
+Edit `backend/config.yaml`:
+
+```yaml
+train_csv: "/your/path/to/layer0_train.csv"
+val_csv:   "/your/path/to/layer0_val.csv"
+test_csv:  "/your/path/to/layer0_test.csv"
+
+train_img_dir: "/your/path/to/LesionIQ/Segregated"
+test_img_dir:  "/your/path/to/LesionIQ/Test"
+metadata_csv:  "/your/path/to/LesionIQ/metadata.csv"
+
+output_dir: ""   # leave empty to use backend/output/
+```
+
+`backend/config.yaml` is git-ignored (only the `.example` is tracked). You can also override any value with environment variables — they take priority over the YAML:
+
+```bash
+export LESIONIQ_TRAIN_CSV=/path/to/layer0_train.csv
+export LESIONIQ_VAL_CSV=/path/to/layer0_val.csv
+export LESIONIQ_TEST_CSV=/path/to/layer0_test.csv
+export LESIONIQ_OUTPUT_DIR=/path/to/output
+```
+
+Then fix the `image_path` column in each CSV to point to your actual image directory:
 ```python
 import pandas as pd
 for csv_file in ['layer0_train.csv', 'layer0_val.csv', 'layer0_test.csv']:
@@ -819,6 +851,21 @@ Disable with `--no-mel-safety` when precision matters more (e.g., batch screenin
 ---
 
 
+
+## Changelog
+
+### 2026-05 — Code Quality & Configuration
+
+- **Centralized path config** — All data paths moved from hardcoded constants in `config.py` / `dataloader.py` to `backend/config.yaml`. Copy `backend/config.yaml.example` → `backend/config.yaml` and fill in your paths. Environment variables (`LESIONIQ_TRAIN_CSV`, etc.) override YAML values.
+- **`train_classifier.py` fixed** — Was importing from a non-existent `dataset.py`. Rewired to use `dataloader.py` and the known class/metadata constants. `--mode`, `--eval-only`, `--fix-swa`, and `--checkpoint` flags all work correctly.
+- **PyTorch 2.x compatibility** — Replaced deprecated `from torch.cuda.amp import autocast` with `torch.amp.autocast("cuda", ...)` and `torch.amp.GradScaler(...)` across all training and inference files.
+- **Model deduplication** — `inference.py` previously redefined `LesionIQHybrid` locally (a divergence risk). It now imports from `models.py` with `pretrained=False`. A `pretrained` parameter was added to `LesionIQHybrid.__init__()` to support both training and inference modes cleanly.
+- **`num_workers` default fixed** — `get_dataloaders()` now defaults to `NUM_WORKERS` from `config.py` (4) instead of 0. Removes the GPU starvation issue on multi-core machines.
+- **Frontend error handling** — `handleRunAnalysis` in `App.tsx` now has a `catch` block. Failed API calls surface an error message with a retry button instead of silently hanging.
+- **Docker Compose reliability** — Added a `healthcheck` to the `ollama` service. `ollama-pull` and the backend now use `depends_on: condition: service_healthy` and `curl --retry 5` instead of a fragile hardcoded `sleep 8`.
+- **`pyyaml` added to `requirements.txt`** — Required for YAML config loading.
+
+---
 
 ## Citation
 
