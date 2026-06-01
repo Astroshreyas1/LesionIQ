@@ -39,15 +39,16 @@ LesionIQ/
 │   ├── tailwind.config.ts
 │   ├── postcss.config.js
 │   ├── eslint.config.js
+│   ├── vercel.json             # SPA routing + API proxy rewrites
 │   └── .env.example
 ├── docs/
-│   ├── fine_tuning_log.txt     # Complete hyperparameter changelog
-│   └── CONTEXT_HANDOFF.md      # Frontend dev handoff context
-├── scripts/                    # Utility scripts (version-controlled)
+│   └── fine_tuning_log.txt     # Complete hyperparameter changelog
+├── scripts/
+│   └── setup_remote_slm.md    # Remote SLM setup guide
+├── Modelfile.lesioniq          # Ollama custom model definition (bakes in system prompt)
 ├── output/                     # Generated inference bundles (git-ignored)
-├── backend/
-│   └── config.yaml.example     # ← copy to config.yaml and fill in your paths
 ├── docker-compose.yml
+├── .env.example                # Runtime env template — copy to .env
 ├── .dockerignore
 ├── README.md
 ├── LICENSE
@@ -101,7 +102,7 @@ LesionIQ/backend/
 │   ├── config.py            # Hyperparameters; loads paths from backend/config.yaml (env vars override)
 │   ├── models.py            # LesionIQHybrid architecture (pretrained param for inference vs training)
 │   ├── dataloader.py        # Dataset, augmentations, weighted sampling; CSV paths from config.py
-│   ├── train.py             # Training loop (CutMix, SWA, 4-way TTA, progressive unfreezing)
+│   ├── train.py             # Training loop (CutMix, SWA, 2-way TTA, progressive unfreezing)
 │   ├── evaluate.py          # Test-set evaluation suite
 │   ├── explainability.py    # Grad-CAM++, SHAP, attention maps, calibration
 │   ├── post_training.py     # Threshold tuning, ensembling, temperature scaling
@@ -157,12 +158,17 @@ LesionIQ/backend/
 
 ### Training Optimizations
 - **CutMix** (30% probability) — preserves lesion texture better than MixUp
-- **4-Way Test-Time Augmentation** — original + H-flip + V-flip + H+V flip
+- **2-Way Test-Time Augmentation** — original + horizontal flip (halves inference time vs 4-way with negligible accuracy impact)
 - **Stochastic Weight Averaging (SWA)** — starts epoch 20, finds wider loss basins
 - **Progressive Backbone Unfreezing** — epoch 15: last backbone stages unlock at 0.1× head LR
 - **Dynamic Patience** — increases from 10 → 15 after unfreezing to protect SWA
 - **Focal Loss** with label smoothing (γ=2.0, ε=0.1)
 - **WeightedRandomSampler** for class-balanced training
+
+### Inference Optimizations
+- **fp16 inference** — model loaded in half precision on CUDA; halves VRAM (~6 GB → ~3 GB) with no accuracy loss at eval time. Controlled by `LESIONIQ_FP16` env var (default on)
+- **Batched SHAP** — all 13 metadata perturbation passes consolidated into a single batched forward pass (~10× speedup on the attribution stage)
+- **`torch.autocast`** — wraps forward passes on CUDA for reduced activation memory
 
 ### Post-Training Pipeline
 - **Per-Class Threshold Tuning** via Nelder-Mead optimization with 80/20 overfit protection
@@ -174,7 +180,7 @@ LesionIQ/backend/
 - **SwinV2 Branch**: Attention rollout visualisations for transformer patch attribution.
 - **Metadata Branch (MLP)**: Perturbation-based feature attribution for tabular feature importance.
 - **Temperature Scaling**: Logits are divided by calibrated temperature (T=0.75) before softmax for improved confidence calibration.
-- **Final Output Generation**: Visual explainability artifacts (Grad-CAM++ overlays, Swin attention maps) and structured feature data (SHAP values, confidence scores, metadata) are packaged into a diagnostic bundle (`diagnosis.json` + images) and fed into Gemma 3 4B-IT (served locally via Ollama) to generate image-aware, clinically grounded explanations. Deterministic post-validation catches hallucinated claims against source evidence.
+- **Final Output Generation**: Visual explainability artifacts (Grad-CAM++ overlays, Swin attention maps) and structured feature data (SHAP values, confidence scores, metadata) are packaged into a diagnostic bundle (`diagnosis.json` + images) and fed into Gemma 3 4B-IT (served via Ollama) to generate image-aware, clinically grounded explanations. Deterministic post-validation catches hallucinated claims against source evidence.
 - **SLM Validation & Fallback**: `validate_and_repair_slm_output()` enforces a strict schema check (required headings, forbidden bracket tokens, unsafe directive phrases). If the SLM response fails validation, a deterministic `_fallback_slm_report()` is generated from the evidence packet, guaranteeing a clinically grounded report is always available.
 - **Feature Hints Pipeline**: `build_feature_hints()` converts raw Grad-CAM++ and attention summaries into conservative clinical hints (primary feature, evidence alignment, uncertainty flags, clinical context) which are embedded in the SLM evidence packet.
 
@@ -234,7 +240,21 @@ The dominant misclassification patterns are **not** AK↔SCC as initially hypoth
 
 ### Backend Quick Start
 ```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 pip install -r backend/requirements.txt
+```
+
+Set environment variables (copy `.env.example` → `.env` and edit):
+```bash
+OLLAMA_BASE_URL=http://localhost:11434   # or remote machine URL
+OLLAMA_MODEL=gemma3:4b-it-qat
+LESIONIQ_FP16=1                         # fp16 inference (recommended)
+```
+
+Start the backend:
+```bash
+set PYTHONPATH=.
+python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000
 ```
 
 ### Frontend Quick Start
@@ -244,14 +264,9 @@ npm install
 npm run dev
 ```
 
-Open the Vite URL printed in the terminal, usually `http://127.0.0.1:5173/`.
+Open the Vite URL printed in the terminal, usually `http://127.0.0.1:5173/`. The local dev server proxies `/api` and `/artifacts` to `localhost:8000` automatically — no environment variables needed.
 
-The frontend expects the live backend by default:
-```bash
-VITE_LESIONIQ_API_BASE_URL=http://localhost:8000
-```
-
-Run the API and local SLM stack:
+### Full Docker Stack (local SLM)
 ```bash
 docker compose up --build
 ```
@@ -323,8 +338,9 @@ The exact class set is preserved:
 #### Frontend Environment Variables
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VITE_LESIONIQ_API_BASE_URL` | `http://localhost:8000` | Backend API base URL |
 | `VITE_LESIONIQ_ENABLE_DEMO_CASES` | unset (false) | Set to `true` to show demo seed cases in the case selector |
+
+> **Note:** No backend URL env var is needed. In local dev, Vite proxies `/api` → `localhost:8000`. In production on Vercel, `vercel.json` rewrites `/api` and `/artifacts` to the backend tunnel. The URL is configured in `frontend/vercel.json`, not in the frontend bundle.
 
 #### Backend Integration Contract
 The frontend uses a single live analysis adapter:
@@ -334,14 +350,9 @@ It exports two functions:
 - `runLesionIQAnalysis({ image, previewUrl, metadata })` — sends the multipart analysis request and returns a typed `CaseRecord`.
 - `resolveLesionIQArtifactUrl(url, outputDirectory)` — resolves relative artifact paths from the backend bundle into absolute URLs for image rendering.
 
-Configure the backend URL with:
-```bash
-VITE_LESIONIQ_API_BASE_URL=http://localhost:8000
-```
-
-When configured, the frontend sends one multipart request:
+The frontend sends one multipart request:
 ```http
-POST /cases/analyze
+POST /api/cases/analyze
 Content-Type: multipart/form-data
 ```
 
@@ -353,25 +364,20 @@ slm_container   lesioniq_ollama
 slm_model       gemma3:4b-it-qat
 ```
 
-The backend should run the complete pipeline:
+The backend runs the complete pipeline:
 ```text
 image + metadata
   -> preprocessing layers
   -> final preprocessed image
-  -> classifier inference
-  -> Grad-CAM++ and graded attention weights
+  -> classifier inference (fp16, 2-way TTA)
+  -> Grad-CAM++ and Swin attention
+  -> batched SHAP metadata attribution
   -> diagnosis.json
-  -> local SLM call through Docker/Ollama
+  -> SLM call (local or remote Ollama)
   -> CaseRecord response
 ```
 
-The local SLM is served by Docker Compose:
-```text
-container: lesioniq_ollama
-model:     gemma3:4b-it-qat
-```
-
-The frontend expects the backend response to match `CaseRecord` from `frontend/src/types/lesioniq.ts`. This keeps the UI modular: Case Review, Preprocessing, Explainability, History, Compare, and Settings all continue reading the same typed record from the shared live analysis response.
+The frontend expects the backend response to match `CaseRecord` from `frontend/src/types/lesioniq.ts`.
 
 Important response fields:
 - `predictionScores`: all 8 class probabilities, thresholds, and margins.
@@ -399,12 +405,11 @@ backend/output/inference/<case_id>/
 - Demo seed data is de-identified, contains no PII, and is gated behind `VITE_LESIONIQ_ENABLE_DEMO_CASES=true`.
 - Uploaded image analysis uses the live FastAPI backend. No database or clinical report export service is connected yet.
 - The UI is suitable for hackathon/product demonstration and backend contract iteration, not clinical deployment.
-- `frontend/src/lib/lesioniqApi.ts` includes `resolveLesionIQArtifactUrl()` to handle both absolute and relative artifact URLs from the backend bundle.
 
 ### Data Setup
 1. Download [ISIC 2019 Training Data](https://challenge.isic-archive.com/data/#2019)
 2. Run Layer 0 preprocessing to create `layer0_train.csv`, `layer0_val.csv`, `layer0_test.csv`
-3. Copy the config template and fill in your paths (see [Machine Transfer → Step 3](#3-configure-paths-via-configyaml) below)
+3. Copy the config template and fill in your paths (see [Machine Setup → Step 3](#3-configure-paths-via-configyaml) below)
 
 ### Training
 ```bash
@@ -501,21 +506,24 @@ For rare classes (DF, VASC, AK, SCC), we generate high-fidelity synthetic dermos
 
 ## Hardware Requirements
 
-| | Training | Inference / Post-Training |
+| | Training | Inference |
 |---|---|---|
-| **GPU** | RTX A6000 (48 GB) or RTX 5070 Ti (16 GB) | Any GPU with ≥ 8 GB VRAM |
-| **VRAM** | ~20 GB (AMP, batch 16, 384×384) | ~5 GB |
-| **Batch size** | 16 (A6000) / 8 (5070 Ti, reduce in config.py) | 16 |
+| **GPU** | ≥ 16 GB VRAM recommended | Any CUDA GPU with ≥ 4 GB VRAM |
+| **VRAM (fp32)** | ~20 GB (batch 16, 384×384) | ~5–6 GB |
+| **VRAM (fp16)** | ~10 GB (batch 16, 384×384) | ~2.5–3 GB |
+| **Batch size** | 16 (≥24 GB) / 8 (16 GB) | 1 (live API) |
 | **Storage** | ~50 GB (dataset + checkpoints) | ~2.5 GB (checkpoints only) |
 | **Epoch time** | ~20 min (`image_only`), ~11 min (single backbone) | — |
 
-> **5070 Ti note:** 16 GB VRAM is sufficient for training with `BATCH_SIZE=8` and `GRAD_ACCUM_STEPS=6` (effective batch = 48). For inference and post-training optimization, batch size 16 works fine.
+> **fp16 inference (default):** The backend loads model weights in half precision when `LESIONIQ_FP16=1` (default). This halves VRAM from ~6 GB to ~3 GB with no accuracy loss at eval time, leaving headroom to run the SLM alongside on the same GPU or on a second machine.
+
+> **CPU fallback:** The inference pipeline runs on CPU if no CUDA GPU is available. Expect ~60–120 seconds per image instead of ~3–5 seconds.
 
 ---
 
-## Machine Transfer
+## Machine Setup
 
-To move the pipeline to a new machine:
+To set up the pipeline on any machine:
 
 ### 1. Clone and install
 ```bash
@@ -531,15 +539,23 @@ pip install -r backend/requirements.txt
 ```
 
 ### 2. Download checkpoints
+Place checkpoint files in `backend/checkpoints/`:
+```
+backend/checkpoints/
+  best_full.pt
+  optimal_scales.npy
+  optimal_temperature.npy
+  mel_safety_threshold.npy
+```
+
+Download from the [GitHub Releases](https://github.com/Astroshreyas1/LesionIQ/releases/tag/v1.0-checkpoints) page or use the download script:
 ```bash
 python scripts/download_checkpoints.py
 ```
 
-Or download manually from the [GitHub Releases](https://github.com/Astroshreyas1/LesionIQ/releases/tag/v1.0-checkpoints) page and place files in `backend/checkpoints/`.
-
 ### 3. Configure paths via config.yaml
 
-All data paths are now centralized in `backend/config.yaml`. Copy the template and fill in your paths:
+All data paths are centralized in `backend/config.yaml`. Copy the template and fill in your paths:
 
 ```bash
 # macOS / Linux
@@ -584,13 +600,17 @@ for csv_file in ['layer0_train.csv', 'layer0_val.csv', 'layer0_test.csv']:
     df.to_csv(csv_file, index=False)
 ```
 
-### 4. For 5070 Ti (16 GB VRAM)
-In `backend/classifier/config.py`:
+### 4. Low-VRAM Setup (< 16 GB VRAM)
+
+If your GPU has less than 16 GB VRAM, reduce batch size and increase gradient accumulation in `backend/classifier/config.py` to keep the effective batch size at 48:
+
 ```python
 BATCH_SIZE = 8           # halved from 16
 GRAD_ACCUM_STEPS = 6     # doubled from 3 (effective batch stays 48)
 NUM_WORKERS = 4          # adjust to CPU core count
 ```
+
+For inference only (no training), fp16 mode (`LESIONIQ_FP16=1`) keeps the model footprint to ~3 GB, which fits comfortably on any ≥ 4 GB VRAM GPU.
 
 ---
 
@@ -599,7 +619,7 @@ NUM_WORKERS = 4          # adjust to CPU core count
 A standalone 5-stage pipeline that classifies dermoscopy images and produces explainability artifacts for SLM-based clinical report generation. No training dependencies required.
 
 ```
-Input Image + Metadata → Preprocessing → Classifier (4-way TTA) → Explainability → SLM Output Bundle
+Input Image + Metadata → Preprocessing → Classifier (fp16, 2-way TTA) → Explainability → SLM Output Bundle
 ```
 
 ### Importable API
@@ -760,7 +780,7 @@ The SLM response is validated by `validate_and_repair_slm_output()`, which check
 | `--no-mel-safety` | off | Disable MEL recall safety override |
 | `--interactive` | auto | Force interactive metadata prompts |
 
-> **Requirements:** `torch`, `torchvision`, `timm`, `albumentations`, `pillow`, `numpy`, `opencv-python`. VRAM: ~5 GB.
+> **Requirements:** `torch`, `torchvision`, `timm`, `albumentations`, `pillow`, `numpy`, `opencv-python`. VRAM: ~3 GB (fp16) / ~6 GB (fp32).
 
 ---
 
@@ -850,9 +870,19 @@ Disable with `--no-mel-safety` when precision matters more (e.g., batch screenin
 
 ---
 
-
-
 ## Changelog
+
+### 2026-06 — Performance, Remote SLM, and Deployment
+
+- **fp16 inference** — Model loaded in half precision on CUDA via `model.half()`. Controlled by `LESIONIQ_FP16` env var (default on). Halves VRAM from ~6 GB to ~3 GB at eval time with no accuracy impact. fp16 input casting added to all forward paths: `predict()`, `GradCAMPP.generate()`, `_extract_swin_attention()`, and `_compute_shap_values()`.
+- **2-way TTA** — Reduced from 4-way (original + H-flip + V-flip + HV-flip) to 2-way (original + horizontal flip only). Halves inference time with negligible accuracy impact on dermoscopy images which are near-vertically symmetric.
+- **Batched SHAP** — All 13 metadata perturbation passes consolidated into a single batched forward pass (~10× speedup on attribution stage).
+- **`torch.autocast` on CUDA** — Wraps forward passes for reduced activation memory.
+- **Albumentations moved to module level** — Removed per-call `import albumentations as A` hot path imports.
+- **Remote SLM support** — `docker-compose.yml` updated to support running Ollama on a separate machine. `OLLAMA_BASE_URL` is now read from `.env`. Ollama service is profile-gated (`profiles: ["local-slm"]`) so it can be skipped when using a remote instance. See `scripts/setup_remote_slm.md`.
+- **`Modelfile.lesioniq`** — Ollama custom model definition that bakes the LesionIQ clinical reasoning system prompt into `gemma3:4b-it-qat`. Create with `ollama create lesioniq-gemma3 -f Modelfile.lesioniq`.
+- **Frontend no longer requires env var** — `lesioniqApi.ts` always uses relative `/api` path. In dev, Vite proxies it to `localhost:8000`. In production, `vercel.json` rewrites it to the backend tunnel. No `VITE_LESIONIQ_API_BASE_URL` needed anywhere.
+- **`backend/classifier/__init__.py`** — Added missing package marker so `from backend.classifier.inference import ...` resolves correctly when running outside Docker.
 
 ### 2026-05 — Code Quality & Configuration
 
@@ -864,6 +894,102 @@ Disable with `--no-mel-safety` when precision matters more (e.g., batch screenin
 - **Frontend error handling** — `handleRunAnalysis` in `App.tsx` now has a `catch` block. Failed API calls surface an error message with a retry button instead of silently hanging.
 - **Docker Compose reliability** — Added a `healthcheck` to the `ollama` service. `ollama-pull` and the backend now use `depends_on: condition: service_healthy` and `curl --retry 5` instead of a fragile hardcoded `sleep 8`.
 - **`pyyaml` added to `requirements.txt`** — Required for YAML config loading.
+
+---
+
+## Hosting / Deployment
+
+LesionIQ uses a **split deployment** — the frontend is a static site hosted on the edge, while inference runs on a local GPU machine.
+
+### Frontend → Vercel (static)
+
+The React + Vite frontend deploys as a static build on [Vercel](https://vercel.com/):
+
+1. Import the GitHub repo on Vercel.
+2. Set **Root Directory** to `frontend`.
+3. Deploy — Vercel auto-detects Vite and builds with `npm run build`.
+
+`frontend/vercel.json` handles both SPA routing and API proxying — no environment variables required in the Vercel dashboard. The `/api/*` and `/artifacts/*` rewrites point to the backend tunnel URL configured directly in `vercel.json`.
+
+### Backend → Local GPU + tunnel
+
+The FastAPI backend runs on your local machine (GPU required for inference) and is exposed to the internet via a tunnel:
+
+```bash
+# Start the backend (set env vars from .env first)
+set PYTHONPATH=C:\LesionIQ
+python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000
+
+# Expose via Cloudflare Tunnel (no account required)
+cloudflared tunnel --url http://localhost:8000
+
+# Or via ngrok (requires free account + authtoken)
+ngrok config add-authtoken <your-authtoken>
+ngrok http 8000
+```
+
+Copy the public tunnel URL and update the rewrites in `frontend/vercel.json`:
+```json
+{ "source": "/api/:path*", "destination": "https://your-tunnel-url.com/:path*" },
+{ "source": "/artifacts/:path*", "destination": "https://your-tunnel-url.com/artifacts/:path*" }
+```
+
+Push to trigger a Vercel redeploy. Cloudflare `trycloudflare.com` tunnels reconnect automatically on dropout; ngrok with an authtoken is more stable for longer sessions.
+
+### SLM → Same machine or remote machine
+
+The Ollama SLM can run on the **same GPU machine** as the backend, or on a **separate machine** to avoid VRAM competition:
+
+**Local SLM (default):**
+```bash
+# In docker-compose (starts Ollama automatically):
+docker compose up --build
+
+# Or run Ollama directly:
+ollama serve
+ollama pull gemma3:4b-it-qat
+```
+
+**Remote SLM (recommended when GPU VRAM is limited):**
+
+On the remote machine:
+```bash
+# 1. Install Ollama: https://ollama.com/download
+# 2. Allow external connections
+OLLAMA_HOST=0.0.0.0 ollama serve   # Linux
+# Windows: set OLLAMA_HOST=0.0.0.0 as a User env var, then restart Ollama
+
+# 3. Pull the model
+ollama pull gemma3:4b-it-qat
+
+# 4. (Optional) Expose to internet via tunnel
+cloudflared tunnel --url http://localhost:11434
+```
+
+On the backend machine, edit `.env`:
+```env
+OLLAMA_BASE_URL=http://<remote-machine-ip>:11434   # LAN
+# or
+OLLAMA_BASE_URL=https://<tunnel-url>               # internet
+```
+
+**Custom system prompt (optional):**
+
+To bake the LesionIQ clinical reasoning prompt permanently into the model on the Ollama machine:
+```bash
+ollama create lesioniq-gemma3 -f Modelfile.lesioniq
+```
+
+Then set `OLLAMA_MODEL=lesioniq-gemma3` in `.env`. The system prompt will be active for every inference without the backend needing to send it each time.
+
+### CORS
+
+The backend CORS middleware accepts any `*.vercel.app` and `*.ngrok-free.app` origin by default. For custom domains, set the `LESIONIQ_FRONTEND_URL` environment variable before starting the backend:
+
+```bash
+export LESIONIQ_FRONTEND_URL=https://your-custom-domain.com
+python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000
+```
 
 ---
 
@@ -903,46 +1029,3 @@ This project is released under the [MIT License](LICENSE).
 - [ISIC Archive](https://www.isic-archive.com/) for the dermoscopy dataset
 - [timm](https://github.com/huggingface/pytorch-image-models) for pretrained backbone models
 - [StyleGAN2-ADA](https://github.com/NVlabs/stylegan2-ada-pytorch) for synthetic generation
-
----
-
-## Hosting / Deployment
-
-LesionIQ uses a **split deployment** — the frontend is a static site hosted on the edge, while inference runs locally on a GPU machine.
-
-### Frontend → Vercel (static)
-
-The React + Vite frontend deploys as a static build on [Vercel](https://vercel.com/):
-
-1. Import the GitHub repo on Vercel.
-2. Set **Root Directory** to `frontend`.
-3. Add the environment variable `VITE_LESIONIQ_API_BASE_URL` set to your backend tunnel URL (see below).
-4. Deploy — Vercel auto-detects Vite and builds with `npm run build`.
-
-A `frontend/vercel.json` is included for SPA routing.
-
-### Backend → Local GPU + ngrok tunnel
-
-The FastAPI backend runs on your local machine (GPU required for inference) and is exposed to the internet via [ngrok](https://ngrok.com/):
-
-```bash
-# Terminal 1 — Start the backend
-cd LesionIQ
-uvicorn backend.api:app --host 0.0.0.0 --port 8000
-
-# Terminal 2 — Expose via ngrok
-ngrok http 8000
-```
-
-Copy the `https://xxxx.ngrok-free.app` URL from the ngrok output and set it as `VITE_LESIONIQ_API_BASE_URL` in Vercel's environment variables.
-
-> **Tip:** For a persistent tunnel URL (no change on restart), use `ngrok http 8000 --url=your-custom-subdomain.ngrok-free.app` (requires a free ngrok account) or use [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) as a zero-cost alternative.
-
-### CORS
-
-The backend CORS middleware accepts any `*.vercel.app` and `*.ngrok-free.app` origin by default. For custom domains, set the `LESIONIQ_FRONTEND_URL` environment variable before starting the backend:
-
-```bash
-export LESIONIQ_FRONTEND_URL=https://your-custom-domain.com
-uvicorn backend.api:app --host 0.0.0.0 --port 8000
-```

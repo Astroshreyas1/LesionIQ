@@ -6,20 +6,23 @@ interface AnalyzeCaseInput {
   metadata: UploadMetadataInput;
 }
 
-const apiBaseUrl =
-  (import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_LESIONIQ_API_BASE_URL?.replace(/\/$/, "") ?? "";
+// Always use relative /api path — routes through Vercel rewrite in prod,
+// and through vite.config.ts proxy in local dev. No env var needed.
+const API_BASE = "/api";
+const ARTIFACTS_BASE = "/artifacts";
 
 export function resolveLesionIQArtifactUrl(url?: string, outputDirectory?: string): string | undefined {
   if (!url) return undefined;
   if (/^(https?:|blob:|data:)/i.test(url)) return url;
 
-  if (url.startsWith("/")) return apiBaseUrl ? `${apiBaseUrl}${url}` : url;
+  if (url.startsWith("/artifacts")) return url;
+  if (url.startsWith("/")) return url;
 
   if (outputDirectory && /^(https?:)/i.test(outputDirectory)) {
     return new URL(url, outputDirectory.endsWith("/") ? outputDirectory : `${outputDirectory}/`).toString();
   }
 
-  return apiBaseUrl ? `${apiBaseUrl}/${url.replace(/^\//, "")}` : `/${url.replace(/^\//, "")}`;
+  return `/${url.replace(/^\//, "")}`;
 }
 
 export async function runLesionIQAnalysis({ image, metadata }: AnalyzeCaseInput): Promise<CaseRecord> {
@@ -29,9 +32,8 @@ export async function runLesionIQAnalysis({ image, metadata }: AnalyzeCaseInput)
   payload.append("slm_container", "lesioniq_ollama");
   payload.append("slm_model", "gemma3:4b-it-qat");
 
-  const response = await fetch(`${apiBaseUrl || "/api"}/cases/analyze`, {
+  const response = await fetch(`${API_BASE}/cases/analyze`, {
     method: "POST",
-    headers: { "ngrok-skip-browser-warning": "true" },
     body: payload
   });
 

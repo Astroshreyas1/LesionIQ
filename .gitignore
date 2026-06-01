@@ -97,3 +97,10 @@ lora_weights/
 frontend/.env
 backend/.env
 backend/config.yaml
+
+# Tunnel binaries (downloaded at runtime)
+cloudflared.exe
+cloudflared
+
+# Nested checkpoint copies
+backend/checkpoints/checkpoints/

@@ -4,6 +4,9 @@
   "installCommand": "npm ci",
   "framework": "vite",
   "rewrites": [
+    { "source": "/api/:path*", "destination": "https://punk-two-plumbing-healing.trycloudflare.com/:path*" },
+    { "source": "/artifacts/:path*", "destination": "https://punk-two-plumbing-healing.trycloudflare.com/artifacts/:path*" },
+    { "source": "/health", "destination": "https://punk-two-plumbing-healing.trycloudflare.com/health" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

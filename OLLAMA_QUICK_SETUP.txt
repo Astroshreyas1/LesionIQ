@@ -1,0 +1,44 @@
+═══════════════════════════════════════════════════════════════════
+QUICK SETUP: LesionIQ System Prompt on Ollama (Remote Machine)
+═══════════════════════════════════════════════════════════════════
+
+STEP 1: Save the Modelfile on the remote machine
+────────────────────────────────────────────────
+Copy the file "Modelfile.lesioniq" from the repo to your remote machine.
+
+STEP 2: Run this command on the remote machine where Ollama is running
+───────────────────────────────────────────────────────────────────────
+ollama create lesioniq-gemma3 -f Modelfile.lesioniq
+
+(It will take a minute to create the model. Just sit tight.)
+
+STEP 3: Verify the model was created
+────────────────────────────────────
+ollama list
+
+You should see:
+  lesioniq-gemma3   latest   <size>
+
+STEP 4: Update the backend config (on the main LesionIQ machine)
+───────────────────────────────────────────────────────────────
+Edit C:\LesionIQ\.env and change:
+
+  BEFORE: OLLAMA_MODEL=gemma3:4b-it-qat
+  AFTER:  OLLAMA_MODEL=lesioniq-gemma3
+
+STEP 5: Restart the backend
+────────────────────────
+Kill the current backend process and restart it:
+  python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000
+
+DONE! ✅
+────────
+The SLM will now automatically use the LesionIQ system prompt for all reports.
+
+═══════════════════════════════════════════════════════════════════
+
+VERIFY IT WORKS:
+Test endpoint: https://lesion-iq.vercel.app/health
+Upload an image and check that the clinical report is generated.
+
+═══════════════════════════════════════════════════════════════════
