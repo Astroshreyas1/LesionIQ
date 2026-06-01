@@ -322,7 +322,15 @@ def normalize_mode(mode="full"):
 @lru_cache(maxsize=8)
 def _load_runtime(mode="full", checkpoint_path=None,
                   use_scales=True, use_temperature=True, use_mel_safety=True):
-    """Load model and calibration assets once for API/server reuse."""
+    """Load model and calibration assets once for API/server reuse.
+
+    Returns (model, scales, temperature, mel_threshold, dirichlet).
+
+    ``dirichlet`` is a tuple ``(W, b)`` of numpy arrays when
+    ``backend/checkpoints/dirichlet_cal.npz`` exists AND the environment
+    variable ``LESIONIQ_USE_DIRICHLET`` is set to ``1``. When active it
+    *replaces* the scalar temperature step in :func:`predict`.
+    """
     mode = normalize_mode(mode)
     model = build_model(mode, checkpoint_path)
 
@@ -347,7 +355,18 @@ def _load_runtime(mode="full", checkpoint_path=None,
             mel_threshold = float(np.load(str(mel_path)))
             print(f"[OK] MEL safety threshold: {mel_threshold:.3f}")
 
-    return model, scales, temperature, mel_threshold
+    dirichlet = None
+    if os.getenv("LESIONIQ_USE_DIRICHLET", "0") == "1":
+        dcal_path = CKPT_DIR / "dirichlet_cal.npz"
+        if dcal_path.exists():
+            d = np.load(str(dcal_path))
+            dirichlet = (d["W"].astype(np.float32), d["b"].astype(np.float32))
+            print(f"[OK] Dirichlet calibration loaded (overrides T={temperature:.4f})")
+        else:
+            print(f"[WARN] LESIONIQ_USE_DIRICHLET=1 but {dcal_path} not found — "
+                  f"falling back to scalar temperature.")
+
+    return model, scales, temperature, mel_threshold, dirichlet
 
 
 # ===================================================================
@@ -355,12 +374,17 @@ def _load_runtime(mode="full", checkpoint_path=None,
 # ===================================================================
 
 @torch.no_grad()
-def predict(model, image_tensor, meta_tensor=None, temperature=1.0, scales=None):
-    """2-way TTA prediction with optional temperature + DiffEvo scaling.
+def predict(model, image_tensor, meta_tensor=None, temperature=1.0,
+            scales=None, dirichlet=None):
+    """2-way TTA prediction with optional temperature/Dirichlet + DiffEvo scaling.
 
     Uses horizontal flip only (the highest-value augmentation). Vertical
     flip and both-flip are dropped to halve inference time with negligible
     accuracy impact. autocast is used on CUDA for reduced activation memory.
+
+    Calibration precedence: if ``dirichlet`` is provided it replaces the
+    scalar ``temperature`` step. ``scales`` (DiffEvo) is applied afterwards
+    in either case.
     """
     image_tensor = image_tensor.to(DEVICE)
     if meta_tensor is not None:
@@ -387,10 +411,18 @@ def predict(model, image_tensor, meta_tensor=None, temperature=1.0, scales=None)
             + _fwd(torch.flip(image_tensor, dims=[3]))   # horizontal flip only
         ) / 2.0
 
-    # Temperature scaling (applied before softmax)
-    logits = logits / temperature
-
-    probs = torch.softmax(logits.float(), dim=1).cpu().numpy()[0]
+    if dirichlet is not None:
+        # Dirichlet calibration: p_cal = softmax(W · log_softmax(z) + b)
+        # Replaces scalar temperature scaling.
+        log_p = F.log_softmax(logits.float(), dim=1)            # (1, K)
+        W = torch.from_numpy(dirichlet[0]).to(log_p.device)     # (K, K)
+        b = torch.from_numpy(dirichlet[1]).to(log_p.device)     # (K,)
+        z_cal = log_p @ W.t() + b                                # (1, K)
+        probs = torch.softmax(z_cal, dim=1).cpu().numpy()[0]
+    else:
+        # Scalar temperature scaling (applied before softmax)
+        logits = logits / temperature
+        probs = torch.softmax(logits.float(), dim=1).cpu().numpy()[0]
 
     # DiffEvo threshold scaling (applied after softmax)
     if scales is not None:
@@ -1027,7 +1059,7 @@ def _compute_shap_values(model, image_tensor, meta_tensor):
 
 
 def diagnose_image(model, image_path, meta_tensor, scales, temperature,
-                   output_dir, raw_meta, mel_threshold=None):
+                   output_dir, raw_meta, mel_threshold=None, dirichlet=None):
     """Run the full 5-stage pipeline on a single image.
 
     Produces a case folder with raw, preprocessing, explainability, and
@@ -1048,8 +1080,8 @@ def diagnose_image(model, image_path, meta_tensor, scales, temperature,
     ])
     img_tensor = transform(image=final_rgb)["image"].unsqueeze(0)
 
-    # -- Classify (TTA + temperature + DiffEvo) --
-    probs   = predict(model, img_tensor, meta_tensor, temperature, scales)
+    # -- Classify (TTA + temperature/Dirichlet + DiffEvo) --
+    probs   = predict(model, img_tensor, meta_tensor, temperature, scales, dirichlet)
 
     # MEL safety override: if raw MEL prob exceeds threshold, force MEL
     mel_safety_applied = False
@@ -1225,7 +1257,7 @@ def run_inference_pipeline(image_path, age, sex, site, mode="full",
     if site_value in {"", "na", "unknown"}:
         site_value = None
 
-    model, scales, temperature, mel_threshold = _load_runtime(
+    model, scales, temperature, mel_threshold, dirichlet = _load_runtime(
         mode, checkpoint_path)
     meta_tensor = encode_metadata(age_value, sex_value, site_value) \
         if mode == "full" else None
@@ -1237,7 +1269,7 @@ def run_inference_pipeline(image_path, age, sex, site, mode="full",
 
     return diagnose_image(
         model, image_path, meta_tensor, scales, temperature,
-        output_dir, raw_meta, mel_threshold)
+        output_dir, raw_meta, mel_threshold, dirichlet)
 
 
 # ===================================================================
@@ -1272,6 +1304,10 @@ def main():
                         help="Disable temperature scaling")
     parser.add_argument("--no-mel-safety",  action="store_true",
                         help="Disable MEL recall safety threshold")
+    parser.add_argument("--dirichlet",      action="store_true",
+                        help="Use Dirichlet calibration (overrides scalar temperature). "
+                             "Requires backend/checkpoints/dirichlet_cal.npz from "
+                             "calibrate_dirichlet.py.")
     parser.add_argument("--interactive",    action="store_true",
                         help="Force interactive metadata prompts")
 
@@ -1303,6 +1339,18 @@ def main():
         if mel_path.exists():
             mel_threshold = float(np.load(str(mel_path)))
             print(f"[OK] MEL safety threshold: {mel_threshold:.3f}")
+
+    # ── Load Dirichlet calibration (overrides scalar T if active) ──
+    dirichlet = None
+    if args.dirichlet:
+        dcal_path = CKPT_DIR / "dirichlet_cal.npz"
+        if dcal_path.exists():
+            d = np.load(str(dcal_path))
+            dirichlet = (d["W"].astype(np.float32), d["b"].astype(np.float32))
+            print(f"[OK] Dirichlet calibration loaded (overrides T={temperature:.4f})")
+        else:
+            print(f"[WARN] --dirichlet set but {dcal_path} not found. "
+                  f"Falling back to scalar temperature.")
 
     # ── Metadata ──
     # Determine if we need interactive prompts:
@@ -1354,7 +1402,8 @@ def main():
     # ── Run pipeline ──
     print(f"\n{'='*55}")
     print(f"  LesionIQ Diagnostic Pipeline")
-    print(f"  Mode: {args.mode} | Temp: {temperature:.4f} | "
+    calibration = "Dirichlet" if dirichlet is not None else f"T={temperature:.4f}"
+    print(f"  Mode: {args.mode} | Calibration: {calibration} | "
           f"Scales: {'on' if scales is not None else 'off'}")
     print(f"{'='*55}")
 
@@ -1363,7 +1412,7 @@ def main():
         try:
             result = diagnose_image(
                 model, img_path, meta_tensor, scales, temperature,
-                args.output_dir, raw_meta, mel_threshold)
+                args.output_dir, raw_meta, mel_threshold, dirichlet)
             all_results.append(result["diagnosis"])
         except Exception as e:
             print(f"  [ERROR] {Path(img_path).name}: {e}")
