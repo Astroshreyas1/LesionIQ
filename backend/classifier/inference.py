@@ -434,8 +434,10 @@ class GradCAMPP:
             self.model.zero_grad()
             score.backward()
 
-        grads = self.gradients[0]
-        acts  = self.activations[0]
+        # Cast to float32 for numerically stable Grad-CAM++ math.
+        # fp16 underflows on pow(2)/pow(3) leaving only padding-edge artifacts.
+        grads = self.gradients[0].float()
+        acts  = self.activations[0].float()
         alpha_num   = grads.pow(2)
         alpha_denom = 2.0 * grads.pow(2) + (acts * grads.pow(3)).sum(
             dim=(1, 2), keepdim=True)
