@@ -9,7 +9,6 @@ interface AnalyzeCaseInput {
 // Always use relative /api path — routes through Vercel rewrite in prod,
 // and through vite.config.ts proxy in local dev. No env var needed.
 const API_BASE = "/api";
-const ARTIFACTS_BASE = "/artifacts";
 
 export function resolveLesionIQArtifactUrl(url?: string, outputDirectory?: string): string | undefined {
   if (!url) return undefined;
