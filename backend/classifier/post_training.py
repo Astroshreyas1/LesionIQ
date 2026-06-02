@@ -284,61 +284,182 @@ def ensemble_predictions(val_loader):
 #  3. TEMPERATURE SCALING (Calibration)
 # =================================================================
 
-def calibrate_temperature(model, val_loader):
-    """Find optimal temperature on validation set via grid search.
-    
-    Grid search is more robust than LBFGS for temperature scaling,
-    especially with float16 logits from AMP training.
-    """
-    print("\n" + "="*60)
-    print(" Temperature Scaling (Calibration)")
-    print("="*60)
-    
-    # Collect all logits
+def _collect_logits(model, val_loader):
+    """Forward-pass the entire val loader; return (logits float32, labels)."""
     all_logits, all_labels = [], []
     model.eval()
     with torch.no_grad():
         for images, meta, labels in val_loader:
             images = images.to(DEVICE)
-            meta = meta.to(DEVICE)
+            meta   = meta.to(DEVICE)
             with torch.amp.autocast("cuda", enabled=USE_AMP):
                 output = model(images, meta)
                 logits = output[0] if isinstance(output, tuple) else output
             all_logits.append(logits.cpu())
             all_labels.append(labels)
-    
-    all_logits = torch.cat(all_logits).float()  # float32 -- critical
-    all_labels = torch.cat(all_labels)
-    
+    return torch.cat(all_logits).float(), torch.cat(all_labels)
+
+
+def calibrate_temperature(model, val_loader):
+    """Find optimal global temperature on validation set via grid search.
+
+    Grid search is more robust than LBFGS for temperature scaling,
+    especially with float16 logits from AMP training.
+    """
+    print("\n" + "="*60)
+    print(" Global Temperature Scaling (Calibration)")
+    print("="*60)
+
+    all_logits, all_labels = _collect_logits(model, val_loader)
+
     # Before calibration
     probs_before = F.softmax(all_logits, dim=1).numpy()
     nll = nn.CrossEntropyLoss()
     nll_before = nll(all_logits, all_labels).item()
-    
+
     # Grid search over temperature values (more robust than LBFGS)
     best_temp = 1.0
-    best_nll = nll_before
+    best_nll  = nll_before
     for t in np.arange(0.5, 5.01, 0.05):
         trial_nll = nll(all_logits / t, all_labels).item()
         if trial_nll < best_nll:
             best_nll = trial_nll
             best_temp = t
-    
+
     optimal_temp = round(best_temp, 2)
-    probs_after = F.softmax(all_logits / optimal_temp, dim=1).numpy()
-    
-    # Compare
+    probs_after  = F.softmax(all_logits / optimal_temp, dim=1).numpy()
+
     f1_before = f1_score(all_labels.numpy(), probs_before.argmax(1), average="macro")
-    f1_after = f1_score(all_labels.numpy(), probs_after.argmax(1), average="macro")
-    
-    print(f"\n  Optimal temperature: {optimal_temp:.2f}")
+    f1_after  = f1_score(all_labels.numpy(), probs_after.argmax(1),  average="macro")
+
+    print(f"\n  Optimal global temperature: {optimal_temp:.2f}")
     print(f"  NLL: {nll_before:.4f} -> {best_nll:.4f}")
-    print(f"  F1 before calibration: {f1_before:.4f}")
-    print(f"  F1 after calibration:  {f1_after:.4f}")
-    print(f"  Note: Temperature scaling primarily improves CALIBRATION")
-    print(f"         (confidence accuracy), not discriminative F1.")
-    
+    print(f"  F1 before: {f1_before:.4f}  F1 after: {f1_after:.4f}")
+    print(f"  (Temperature scaling improves calibration, not discriminative F1.)")
+
     return optimal_temp
+
+
+# =================================================================
+#  3b. PER-CLASS TEMPERATURE SCALING
+# =================================================================
+
+class PerClassTemperatureScaler:
+    """8 independent scalar temperatures — one per output class dimension.
+
+    Motivation: A single global temperature is biased toward the dominant
+    validation classes (NV, MEL ~69% combined), causing it to over-sharpen
+    rare-class logits (SCC, DF, VASC) that are already poorly calibrated.
+    Per-class temperatures let each class independently find its optimal
+    sharpness.
+
+    Implementation:
+        scaled_logits[k] = logits[k] / T_k      for each class k
+        probs = softmax(scaled_logits)
+
+    Temperatures are constrained to be >= 0.1 to prevent division by zero
+    or extreme sharpening of a single class.
+    """
+
+    def __init__(self, n_classes: int = NUM_CLASSES):
+        self.n_classes    = n_classes
+        self.temperatures = np.ones(n_classes, dtype=np.float32)
+
+    def fit(self, all_logits: torch.Tensor, all_labels: torch.Tensor,
+            max_iter: int = 500) -> "PerClassTemperatureScaler":
+        """Fit via LBFGS minimising cross-entropy NLL on val logits."""
+        temps = torch.ones(self.n_classes, dtype=torch.float32, requires_grad=True)
+        optimizer = torch.optim.LBFGS(
+            [temps], lr=0.1, max_iter=max_iter,
+            tolerance_grad=1e-7, tolerance_change=1e-9,
+            line_search_fn="strong_wolfe",
+        )
+
+        def closure():
+            optimizer.zero_grad()
+            scaled = all_logits / temps.clamp(min=0.1)
+            loss   = F.cross_entropy(scaled, all_labels)
+            loss.backward()
+            return loss
+
+        optimizer.step(closure)
+        self.temperatures = temps.detach().clamp(min=0.1).numpy().astype(np.float32)
+        return self
+
+    def transform(self, logits_np: np.ndarray) -> np.ndarray:
+        """Apply per-class temperatures. (N,K) logits → (N,K) probs."""
+        z      = torch.from_numpy(logits_np).float()
+        temps  = torch.from_numpy(self.temperatures)
+        scaled = z / temps                          # broadcast (N,K) / (K,)
+        return F.softmax(scaled, dim=1).numpy()
+
+    def save(self, path: str) -> None:
+        np.save(path, self.temperatures)
+
+    @classmethod
+    def load(cls, path: str) -> "PerClassTemperatureScaler":
+        obj = cls()
+        obj.temperatures = np.load(path).astype(np.float32)
+        obj.n_classes    = len(obj.temperatures)
+        return obj
+
+
+def calibrate_per_class_temperature(model, val_loader,
+                                     class_names=None) -> np.ndarray:
+    """Fit 8 per-class temperatures on the validation set.
+
+    Returns the temperatures as a (K,) numpy array and prints a comparison
+    table against the global temperature result.
+    """
+    if class_names is None:
+        class_names = ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC"]
+
+    print("\n" + "="*60)
+    print(" Per-Class Temperature Scaling (Calibration)")
+    print("="*60)
+
+    all_logits, all_labels = _collect_logits(model, val_loader)
+
+    # Baseline NLL
+    nll_fn    = nn.CrossEntropyLoss()
+    nll_raw   = nll_fn(all_logits, all_labels).item()
+
+    # Global temperature (for comparison only — does not re-save)
+    best_global, best_nll_g = 1.0, nll_raw
+    for t in np.arange(0.5, 5.01, 0.05):
+        trial = nll_fn(all_logits / t, all_labels).item()
+        if trial < best_nll_g:
+            best_nll_g, best_global = trial, t
+
+    # Per-class temperatures
+    scaler = PerClassTemperatureScaler(n_classes=all_logits.shape[1])
+    scaler.fit(all_logits, all_labels)
+
+    nll_pc = nll_fn(
+        all_logits / torch.from_numpy(scaler.temperatures).clamp(min=0.1),
+        all_labels,
+    ).item()
+
+    # F1 comparison
+    probs_raw    = F.softmax(all_logits, dim=1).numpy()
+    probs_global = F.softmax(all_logits / best_global, dim=1).numpy()
+    probs_pc     = scaler.transform(all_logits.numpy())
+    labels_np    = all_labels.numpy()
+
+    f1_raw    = f1_score(labels_np, probs_raw.argmax(1),    average="macro")
+    f1_global = f1_score(labels_np, probs_global.argmax(1), average="macro")
+    f1_pc     = f1_score(labels_np, probs_pc.argmax(1),     average="macro")
+
+    print(f"\n  {'':22s}  {'NLL':>8}  {'Macro-F1':>10}")
+    print(f"  {'Raw (no calibration)':22s}  {nll_raw:>8.4f}  {f1_raw:>10.4f}")
+    print(f"  {'Global T={:.2f}'.format(best_global):22s}  {best_nll_g:>8.4f}  {f1_global:>10.4f}")
+    print(f"  {'Per-class T (x8)':22s}  {nll_pc:>8.4f}  {f1_pc:>10.4f}")
+    print(f"\n  Per-class temperatures:")
+    for name, t in zip(class_names, scaler.temperatures):
+        bar = "▓" * int(t * 10)
+        print(f"    {name:<6s}  T={t:.3f}  {bar}")
+
+    return scaler.temperatures
 
 
 # =================================================================
@@ -376,16 +497,25 @@ if __name__ == "__main__":
         print(f"  Ensemble failed: {e}")
         import traceback; traceback.print_exc()
     
-    # --- 3. Temperature scaling ---
+    # --- 3a. Global temperature scaling ---
     try:
         best_model = load_model("full")
         optimal_temp = calibrate_temperature(best_model, val_loader)
-        
-        # Save temperature
         np.save(os.path.join(CKPT_DIR, "optimal_temperature.npy"), optimal_temp)
-        print(f"  Saved temperature -> {os.path.join(CKPT_DIR, 'optimal_temperature.npy')}")
+        print(f"  Saved global temperature -> {os.path.join(CKPT_DIR, 'optimal_temperature.npy')}")
     except Exception as e:
-        print(f"  Temperature scaling failed: {e}")
+        print(f"  Global temperature scaling failed: {e}")
+        import traceback; traceback.print_exc()
+
+    # --- 3b. Per-class temperature scaling ---
+    try:
+        best_model = load_model("full")
+        pc_temps = calibrate_per_class_temperature(best_model, val_loader)
+        pc_path  = os.path.join(CKPT_DIR, "per_class_temperatures.npy")
+        np.save(pc_path, pc_temps)
+        print(f"  Saved per-class temperatures -> {pc_path}")
+    except Exception as e:
+        print(f"  Per-class temperature scaling failed: {e}")
         import traceback; traceback.print_exc()
     
     print("\n" + "="*60)

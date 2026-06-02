@@ -322,7 +322,16 @@ def normalize_mode(mode="full"):
 @lru_cache(maxsize=8)
 def _load_runtime(mode="full", checkpoint_path=None,
                   use_scales=True, use_temperature=True, use_mel_safety=True):
-    """Load model and calibration assets once for API/server reuse."""
+    """Load model and calibration assets once for API/server reuse.
+
+    Returns a 5-tuple:
+        (model, scales, temperature, mel_threshold, per_class_temperatures)
+
+    ``per_class_temperatures`` is a float32 numpy array of shape (8,) when
+    ``backend/checkpoints/per_class_temperatures.npy`` exists, otherwise None.
+    When present it supersedes the scalar ``temperature`` inside ``predict()``.
+    The scalar is kept as a fallback and for logging.
+    """
     mode = normalize_mode(mode)
     model = build_model(mode, checkpoint_path)
 
@@ -338,7 +347,7 @@ def _load_runtime(mode="full", checkpoint_path=None,
         temp_path = CKPT_DIR / "optimal_temperature.npy"
         if temp_path.exists():
             temperature = float(np.load(str(temp_path)))
-            print(f"[OK] Temperature scaling: T={temperature:.4f}")
+            print(f"[OK] Global temperature scaling: T={temperature:.4f}")
 
     mel_threshold = None
     if use_mel_safety:
@@ -347,7 +356,15 @@ def _load_runtime(mode="full", checkpoint_path=None,
             mel_threshold = float(np.load(str(mel_path)))
             print(f"[OK] MEL safety threshold: {mel_threshold:.3f}")
 
-    return model, scales, temperature, mel_threshold
+    per_class_temperatures = None
+    if use_temperature:
+        pc_path = CKPT_DIR / "per_class_temperatures.npy"
+        if pc_path.exists():
+            per_class_temperatures = np.load(str(pc_path)).astype(np.float32)
+            print(f"[OK] Per-class temperature scaling loaded "
+                  f"(mean T={per_class_temperatures.mean():.4f})")
+
+    return model, scales, temperature, mel_threshold, per_class_temperatures
 
 
 # ===================================================================
@@ -355,12 +372,16 @@ def _load_runtime(mode="full", checkpoint_path=None,
 # ===================================================================
 
 @torch.no_grad()
-def predict(model, image_tensor, meta_tensor=None, temperature=1.0, scales=None):
-    """2-way TTA prediction with optional temperature + DiffEvo scaling.
+def predict(model, image_tensor, meta_tensor=None, temperature=1.0,
+            scales=None, per_class_temperatures=None):
+    """2-way TTA prediction with temperature calibration + DiffEvo scaling.
 
-    Uses horizontal flip only (the highest-value augmentation). Vertical
-    flip and both-flip are dropped to halve inference time with negligible
-    accuracy impact. autocast is used on CUDA for reduced activation memory.
+    Calibration precedence (highest to lowest):
+        1. per_class_temperatures (8-d, one scalar per class) — preferred
+        2. temperature (global scalar) — fallback when (1) is unavailable
+    DiffEvo ``scales`` are applied after softmax in both cases.
+
+    Uses horizontal flip only. autocast on CUDA for reduced activation memory.
     """
     image_tensor = image_tensor.to(DEVICE)
     if meta_tensor is not None:
@@ -388,9 +409,15 @@ def predict(model, image_tensor, meta_tensor=None, temperature=1.0, scales=None)
         ) / 2.0
 
     # Temperature scaling (applied before softmax)
-    logits = logits / temperature
+    # Per-class temperatures take precedence over the global scalar.
+    logits = logits.float()
+    if per_class_temperatures is not None:
+        temps_t = torch.from_numpy(per_class_temperatures).to(logits.device)
+        logits  = logits / temps_t          # broadcast (1, K) / (K,)
+    else:
+        logits  = logits / temperature      # global scalar fallback
 
-    probs = torch.softmax(logits.float(), dim=1).cpu().numpy()[0]
+    probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
 
     # DiffEvo threshold scaling (applied after softmax)
     if scales is not None:
@@ -1027,7 +1054,8 @@ def _compute_shap_values(model, image_tensor, meta_tensor):
 
 
 def diagnose_image(model, image_path, meta_tensor, scales, temperature,
-                   output_dir, raw_meta, mel_threshold=None):
+                   output_dir, raw_meta, mel_threshold=None,
+                   per_class_temperatures=None):
     """Run the full 5-stage pipeline on a single image.
 
     Produces a case folder with raw, preprocessing, explainability, and
@@ -1048,8 +1076,9 @@ def diagnose_image(model, image_path, meta_tensor, scales, temperature,
     ])
     img_tensor = transform(image=final_rgb)["image"].unsqueeze(0)
 
-    # -- Classify (TTA + temperature + DiffEvo) --
-    probs   = predict(model, img_tensor, meta_tensor, temperature, scales)
+    # -- Classify (TTA + temperature calibration + DiffEvo) --
+    probs = predict(model, img_tensor, meta_tensor, temperature, scales,
+                    per_class_temperatures)
 
     # MEL safety override: if raw MEL prob exceeds threshold, force MEL
     mel_safety_applied = False
@@ -1112,7 +1141,13 @@ def diagnose_image(model, image_path, meta_tensor, scales, temperature,
         "image": Path(image_path).name,
         "model": {
             "mode": model.mode,
-            "temperature": round(temperature, 4),
+            # "temperature" always a scalar for frontend compat; when per-class
+            # temperatures are active we report their mean here.
+            "temperature": round(
+                float(np.mean(per_class_temperatures)) if per_class_temperatures is not None
+                else temperature, 4),
+            "calibration_mode": (
+                "per_class" if per_class_temperatures is not None else "global"),
             "thresholds_applied": scales is not None,
             "mel_safety_threshold": round(mel_threshold, 3) if mel_threshold else None,
             "mel_safety_triggered": mel_safety_applied,
@@ -1225,7 +1260,7 @@ def run_inference_pipeline(image_path, age, sex, site, mode="full",
     if site_value in {"", "na", "unknown"}:
         site_value = None
 
-    model, scales, temperature, mel_threshold = _load_runtime(
+    model, scales, temperature, mel_threshold, per_class_temperatures = _load_runtime(
         mode, checkpoint_path)
     meta_tensor = encode_metadata(age_value, sex_value, site_value) \
         if mode == "full" else None
@@ -1237,7 +1272,7 @@ def run_inference_pipeline(image_path, age, sex, site, mode="full",
 
     return diagnose_image(
         model, image_path, meta_tensor, scales, temperature,
-        output_dir, raw_meta, mel_threshold)
+        output_dir, raw_meta, mel_threshold, per_class_temperatures)
 
 
 # ===================================================================
@@ -1288,13 +1323,22 @@ def main():
             scales = np.load(str(scales_path))
             print("[OK] DiffEvo threshold scales loaded")
 
-    # ── Load temperature ──
+    # ── Load temperature (global scalar fallback) ──
     temperature = 1.0
     if not args.no_temperature:
         temp_path = CKPT_DIR / "optimal_temperature.npy"
         if temp_path.exists():
             temperature = float(np.load(str(temp_path)))
-            print(f"[OK] Temperature scaling: T={temperature:.4f}")
+            print(f"[OK] Global temperature scaling: T={temperature:.4f}")
+
+    # ── Load per-class temperatures (preferred; overrides global T) ──
+    per_class_temperatures = None
+    if not args.no_temperature:
+        pc_path = CKPT_DIR / "per_class_temperatures.npy"
+        if pc_path.exists():
+            per_class_temperatures = np.load(str(pc_path)).astype(np.float32)
+            print(f"[OK] Per-class temperature scaling loaded "
+                  f"(mean T={per_class_temperatures.mean():.4f})")
 
     # ── Load MEL safety threshold ──
     mel_threshold = None
@@ -1354,7 +1398,10 @@ def main():
     # ── Run pipeline ──
     print(f"\n{'='*55}")
     print(f"  LesionIQ Diagnostic Pipeline")
-    print(f"  Mode: {args.mode} | Temp: {temperature:.4f} | "
+    calib_label = (f"per-class T (mean={per_class_temperatures.mean():.3f})"
+                   if per_class_temperatures is not None
+                   else f"global T={temperature:.4f}")
+    print(f"  Mode: {args.mode} | Calibration: {calib_label} | "
           f"Scales: {'on' if scales is not None else 'off'}")
     print(f"{'='*55}")
 
@@ -1363,7 +1410,7 @@ def main():
         try:
             result = diagnose_image(
                 model, img_path, meta_tensor, scales, temperature,
-                args.output_dir, raw_meta, mel_threshold)
+                args.output_dir, raw_meta, mel_threshold, per_class_temperatures)
             all_results.append(result["diagnosis"])
         except Exception as e:
             print(f"  [ERROR] {Path(img_path).name}: {e}")
