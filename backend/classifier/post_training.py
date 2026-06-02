@@ -59,24 +59,45 @@ def get_all_probs(model, loader):
     for images, meta, labels in loader:
         images = images.to(DEVICE, non_blocking=True)
         meta   = meta.to(DEVICE, non_blocking=True)
-        
+
         with torch.amp.autocast("cuda", enabled=USE_AMP):
             # 4-way TTA
             def _fwd(x):
                 out = model(x, meta)
                 return out[0] if isinstance(out, tuple) else out
-            
-            logits = (_fwd(images) + 
+
+            logits = (_fwd(images) +
                       _fwd(torch.flip(images, dims=[3])) +
                       _fwd(torch.flip(images, dims=[2])) +
                       _fwd(torch.flip(images, dims=[2, 3]))) / 4.0
-        
+
         # float32 before softmax -- AMP float16 softmax overflows
         probs = torch.softmax(logits.float(), dim=1).cpu().numpy()
         all_probs.append(probs)
         all_labels.extend(labels.numpy())
-    
+
     return np.concatenate(all_probs), np.array(all_labels)
+
+
+@torch.no_grad()
+def get_all_logits(model, loader):
+    """Like get_all_probs but returns raw logits (no softmax).
+    Used for logit-space ensemble averaging before a single final softmax."""
+    all_logits, all_labels = [], []
+    for images, meta, labels in loader:
+        images = images.to(DEVICE, non_blocking=True)
+        meta   = meta.to(DEVICE, non_blocking=True)
+        with torch.amp.autocast("cuda", enabled=USE_AMP):
+            def _fwd(x):
+                out = model(x, meta)
+                return out[0] if isinstance(out, tuple) else out
+            logits = (_fwd(images) +
+                      _fwd(torch.flip(images, dims=[3])) +
+                      _fwd(torch.flip(images, dims=[2])) +
+                      _fwd(torch.flip(images, dims=[2, 3]))) / 4.0
+        all_logits.append(logits.float().cpu().numpy())
+        all_labels.extend(labels.numpy())
+    return np.concatenate(all_logits), np.array(all_labels)
 
 
 # =================================================================
@@ -203,55 +224,59 @@ def ensemble_predictions(val_loader):
     print("\n" + "="*60)
     print(" Ensemble (All 4 Ablation Models)")
     print("="*60)
-    
-    all_model_probs = []
+
+    all_model_logits = []
     available_modes = []
-    
+
     for mode in MODES:
         try:
             model = load_model(mode, f"best_{mode}.pt")
-            probs, labels = get_all_probs(model, val_loader)
-            all_model_probs.append(probs)
+            # collect raw logits for logit-space ensemble
+            logits, labels = get_all_logits(model, val_loader)
+            all_model_logits.append(logits)
             available_modes.append(mode)
             del model
             torch.cuda.empty_cache()
         except Exception as e:
             print(f"  [SKIP] {mode}: {e}")
-    
-    if len(all_model_probs) < 2:
+
+    if len(all_model_logits) < 2:
         print("  Need at least 2 models for ensemble. Skipping.")
         return None, None
-    
-    # Simple average ensemble
-    ensemble_probs = np.mean(all_model_probs, axis=0)
+
+    # Logit-space ensemble: average raw logits before a single softmax
+    ensemble_probs = torch.softmax(
+        torch.from_numpy(np.mean(all_model_logits, axis=0)), dim=1).numpy()
     ensemble_preds = ensemble_probs.argmax(axis=1)
     ensemble_f1 = f1_score(labels, ensemble_preds, average="macro")
     ensemble_auc = roc_auc_score(labels, ensemble_probs, multi_class='ovr', average='macro')
-    
+
     print(f"\n  Ensemble ({len(available_modes)} models): Macro-F1 = {ensemble_f1:.4f}  AUC = {ensemble_auc:.4f}")
     print(f"  Models used: {available_modes}")
-    
-    # Also try weighted ensemble (optimize weights)
+
+    # Also try weighted ensemble (optimize weights in logit-space)
     def neg_f1_weights(weights):
         weights = np.abs(weights) / np.sum(np.abs(weights))  # Normalize
-        weighted_probs = sum(w * p for w, p in zip(weights, all_model_probs))
-        preds = weighted_probs.argmax(axis=1)
+        weighted_logits = sum(w * l for w, l in zip(weights, all_model_logits))
+        probs = torch.softmax(torch.from_numpy(weighted_logits), dim=1).numpy()
+        preds = probs.argmax(axis=1)
         return -f1_score(labels, preds, average="macro")
-    
-    w0 = np.ones(len(all_model_probs)) / len(all_model_probs)
+
+    w0 = np.ones(len(all_model_logits)) / len(all_model_logits)
     result = minimize(neg_f1_weights, w0, method='Nelder-Mead',
                       options={'maxiter': 2000})
-    
+
     best_weights = np.abs(result.x) / np.sum(np.abs(result.x))
-    weighted_probs = sum(w * p for w, p in zip(best_weights, all_model_probs))
+    weighted_logits = sum(w * l for w, l in zip(best_weights, all_model_logits))
+    weighted_probs = torch.softmax(torch.from_numpy(weighted_logits), dim=1).numpy()
     weighted_preds = weighted_probs.argmax(axis=1)
     weighted_f1 = f1_score(labels, weighted_preds, average="macro")
-    
+
     print(f"  Weighted Ensemble:  Macro-F1 = {weighted_f1:.4f}")
     print(f"  Optimal weights:")
     for mode, w in zip(available_modes, best_weights):
         print(f"    {mode:>12s}: {w:.4f}")
-    
+
     return ensemble_probs, labels
 
 

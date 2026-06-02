@@ -89,6 +89,27 @@ def get_all_probs(model, loader):
     return np.concatenate(all_probs), np.array(all_labels)
 
 
+@torch.no_grad()
+def get_all_logits(model, loader):
+    """Like get_all_probs but returns raw logits (no softmax).
+    Used for logit-space ensemble averaging before a single final softmax."""
+    all_logits, all_labels = [], []
+    for images, meta, labels in loader:
+        images = images.to(DEVICE, non_blocking=True)
+        meta = meta.to(DEVICE, non_blocking=True)
+        with torch.amp.autocast("cuda", enabled=USE_AMP):
+            def _fwd(x):
+                out = model(x, meta)
+                return out[0] if isinstance(out, tuple) else out
+            logits = (_fwd(images) +
+                      _fwd(torch.flip(images, dims=[3])) +
+                      _fwd(torch.flip(images, dims=[2])) +
+                      _fwd(torch.flip(images, dims=[2, 3]))) / 4.0
+        all_logits.append(logits.float().cpu().numpy())
+        all_labels.extend(labels.numpy())
+    return np.concatenate(all_logits), np.array(all_labels)
+
+
 # =================================================================
 #  Confusion matrix analysis (focused on actual failure modes)
 # =================================================================
@@ -328,18 +349,21 @@ if __name__ == "__main__":
 
     # ── Build ensemble ──────────────────────────────────────────
     print("\n  Loading models for ensemble...")
-    all_probs = []
+    all_logits = []
     labels = None
     for mode in MODES:
         try:
             m = load_model(mode)
-            p, labels = get_all_probs(m, val_loader)
-            all_probs.append(p)
+            # collect raw logits for logit-space ensemble
+            logits, labels = get_all_logits(m, val_loader)
+            all_logits.append(logits)
             del m; torch.cuda.empty_cache()
         except Exception as e:
             print(f"  [SKIP] {mode}: {e}")
 
-    ensemble_probs = np.mean(all_probs, axis=0)
+    # Logit-space ensemble: average raw logits before a single softmax
+    ensemble_probs = torch.softmax(
+        torch.from_numpy(np.mean(all_logits, axis=0)), dim=1).numpy()
     ens_baseline = f1_score(labels, ensemble_probs.argmax(1), average="macro")
     print(f"\n  Ensemble models: {len(all_probs)}")
     print(f"  Ensemble baseline macro-F1: {ens_baseline:.4f}")

@@ -79,6 +79,27 @@ def get_all_probs(model, loader):
     return np.concatenate(all_probs), np.array(all_labels)
 
 
+@torch.no_grad()
+def get_all_logits(model, loader):
+    """Like get_all_probs but returns raw logits (no softmax).
+    Used for logit-space ensemble averaging before a single final softmax."""
+    all_logits, all_labels = [], []
+    for images, meta, labels in loader:
+        images = images.to(DEVICE, non_blocking=True)
+        meta = meta.to(DEVICE, non_blocking=True)
+        with torch.amp.autocast("cuda", enabled=USE_AMP):
+            def _fwd(x):
+                out = model(x, meta)
+                return out[0] if isinstance(out, tuple) else out
+            logits = (_fwd(images) +
+                      _fwd(torch.flip(images, dims=[3])) +
+                      _fwd(torch.flip(images, dims=[2])) +
+                      _fwd(torch.flip(images, dims=[2, 3]))) / 4.0
+        all_logits.append(logits.float().cpu().numpy())
+        all_labels.extend(labels.numpy())
+    return np.concatenate(all_logits), np.array(all_labels)
+
+
 # =================================================================
 #  METHOD 1: Differential Evolution (global optimizer)
 # =================================================================
@@ -278,18 +299,21 @@ if __name__ == "__main__":
     print(" ENSEMBLE (3 models)")
     print("#" * 60)
 
-    all_model_probs = []
+    all_model_logits = []
     for mode in MODES:
         try:
             m = load_model(mode, f"best_{mode}.pt")
-            p, labels = get_all_probs(m, val_loader)
-            all_model_probs.append(p)
+            # collect raw logits for logit-space ensemble
+            logits, labels = get_all_logits(m, val_loader)
+            all_model_logits.append(logits)
             del m; torch.cuda.empty_cache()
         except Exception as e:
             print(f"  [SKIP] {mode}: {e}")
 
-    if len(all_model_probs) >= 2:
-        ensemble_probs = np.mean(all_model_probs, axis=0)
+    if len(all_model_logits) >= 2:
+        # Logit-space ensemble: average raw logits before a single softmax
+        ensemble_probs = torch.softmax(
+            torch.from_numpy(np.mean(all_model_logits, axis=0)), dim=1).numpy()
         ens_baseline = f1_score(labels, ensemble_probs.argmax(1), average="macro")
         print(f"\n  Ensemble baseline: {ens_baseline:.4f}")
 
@@ -308,7 +332,7 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"  Single model baseline:   0.5924")
     print(f"  Single model best:       {best_single[1]:.4f} ({best_single[2]})")
-    if len(all_model_probs) >= 2:
+    if len(all_model_logits) >= 2:
         print(f"  Ensemble baseline:       {ens_baseline:.4f}")
         print(f"  Ensemble best:           {best_ens[1]:.4f} ({best_ens[2]})")
 
