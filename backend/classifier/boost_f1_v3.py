@@ -365,7 +365,7 @@ if __name__ == "__main__":
     ensemble_probs = torch.softmax(
         torch.from_numpy(np.mean(all_logits, axis=0)), dim=1).numpy()
     ens_baseline = f1_score(labels, ensemble_probs.argmax(1), average="macro")
-    print(f"\n  Ensemble models: {len(all_probs)}")
+    print(f"\n  Ensemble models: {len(all_logits)}")
     print(f"  Ensemble baseline macro-F1: {ens_baseline:.4f}")
 
     # ── BEFORE: confusion matrix ────────────────────────────────
