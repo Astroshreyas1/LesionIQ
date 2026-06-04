@@ -349,7 +349,12 @@ async def _generate_slm_summary(
     ]
     prompt = build_slm_prompt(slm_payload)
     try:
-        async with httpx.AsyncClient(timeout=180) as client:
+        # connect_timeout is short so an offline Ollama fails fast and hits
+        # the fallback below before the Cloudflare tunnel (or any proxy) times
+        # out. read_timeout stays long because token generation can be slow.
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=8.0, read=150.0, write=10.0, pool=5.0)
+        ) as client:
             message_content = [{"type": "text", "text": prompt}]
             for img_b64 in images:
                 message_content.insert(0, {
