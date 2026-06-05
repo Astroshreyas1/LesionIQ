@@ -328,7 +328,8 @@ def generate_calibration_curves(
         images = images.to(device, non_blocking=True)
         meta   = meta.to(device, non_blocking=True)
         with torch.no_grad():
-            logits, _ = model(images, meta)
+            out = model(images, meta)
+            logits = out[0] if isinstance(out, tuple) else out
         all_probs.append(F.softmax(logits, dim=1).cpu().numpy())
         all_labels.append(labels.numpy())
 
