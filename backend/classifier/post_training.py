@@ -462,7 +462,8 @@ def calibrate_per_class_temperature(model, val_loader,
     print(f"  {'Per-class T (x8)':22s}  {nll_pc:>8.4f}  {f1_pc:>10.4f}")
     print(f"\n  Per-class temperatures:")
     for name, t in zip(class_names, scaler.temperatures):
-        bar = "▓" * int(t * 10)
+        # ascii bar (avoid Unicode chars; Windows cp1252 console crashes on them)
+        bar = "#" * int(t * 10)
         print(f"    {name:<6s}  T={t:.3f}  {bar}")
 
     return scaler.temperatures
