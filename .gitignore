@@ -76,6 +76,7 @@ synthetic/stylegan2/stylegan2-ada-pytorch/
 backend/synthetic/stylegan2/stylegan2-ada-pytorch/
 training-runs/
 datasets/
+dataset/
 
 # Synthetic images 
 synthetic_output/
