@@ -89,7 +89,7 @@ def _merge_and_encode(gt_csv: Path, meta_csv: Path, image_dir: Path,
         before = len(df)
         df = df[df["UNK"] != 1.0].copy()
         df = df.drop(columns=["UNK"])
-        print(f"[FILT] Dropped {before - len(df)} UNK-class rows → {len(df)} remain")
+        print(f"[FILT] Dropped {before - len(df)} UNK-class rows -> {len(df)} remain")
 
     # ── Encode class ──
     label_arr = df[LABEL_COLS].to_numpy(dtype=np.float32)
@@ -102,7 +102,7 @@ def _merge_and_encode(gt_csv: Path, meta_csv: Path, image_dir: Path,
     df["image_path"] = df["image"].apply(lambda x: str((image_dir / f"{x}.jpg").resolve()))
 
     # ── age ──
-    # Empty → 0 (dataloader divides by 90; population-mean-ish fallback)
+    # Empty -> 0 (dataloader divides by 90; population-mean-ish fallback)
     df["age_approx"] = pd.to_numeric(df.get("age_approx", 0), errors="coerce").fillna(0)
 
     # ── sex one-hot ──
