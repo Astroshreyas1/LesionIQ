@@ -105,3 +105,6 @@ cloudflared
 
 # Nested checkpoint copies
 backend/checkpoints/checkpoints/
+
+# Logit caches (regeneratable; large)
+backend/checkpoints/val_logits_*.npz
