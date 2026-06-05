@@ -8,6 +8,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export PYTHONPATH="$(pwd)"
 export PYTHONUNBUFFERED=1
+# Force UTF-8 stdout/stderr so the many Unicode chars in print statements
+# (arrows, box-drawing chars, etc.) don't crash on Windows cp1252 console.
+export PYTHONIOENCODING=utf-8
 
 LOG_DIR="backend/output/reports"
 mkdir -p "$LOG_DIR"

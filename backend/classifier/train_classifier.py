@@ -25,7 +25,15 @@ from backend.classifier.config import (
 )
 from backend.classifier.dataloader import LABEL_COLS, META_COLS, get_dataloaders
 from backend.classifier.models import LesionIQHybrid
-from backend.classifier.train import FocalLoss, _validate, train
+# train.py pulls in `wandb` at import time; skip it for eval-only / fix-swa
+# runs so missing optional deps don't block evaluation.
+try:
+    from backend.classifier.train import FocalLoss, _validate, train  # noqa: F401
+except ModuleNotFoundError as _train_import_err:
+    _MISSING_TRAIN_DEPS = _train_import_err
+    FocalLoss = _validate = train = None
+else:
+    _MISSING_TRAIN_DEPS = None
 from backend.classifier.evaluate import evaluate
 from backend.classifier.explainability import run_explainability
 
@@ -95,6 +103,11 @@ def main() -> None:
 
     # ── Fix SWA (re-run BN update only) ───────────────────────
     if args.fix_swa:
+        if _MISSING_TRAIN_DEPS is not None:
+            print(f"ERROR: --fix-swa requires the training stack "
+                  f"(missing: {_MISSING_TRAIN_DEPS}). Install wandb or run "
+                  f"--eval-only instead.")
+            sys.exit(1)
         if not args.checkpoint:
             print("ERROR: --fix-swa requires --checkpoint path/to/best_model.pt")
             sys.exit(1)
@@ -138,6 +151,11 @@ def main() -> None:
 
     # ── Train ─────────────────────────────────────────────────
     if not args.eval_only:
+        if _MISSING_TRAIN_DEPS is not None:
+            print(f"ERROR: training requires the training stack "
+                  f"(missing: {_MISSING_TRAIN_DEPS}). Install wandb or pass "
+                  f"--eval-only.")
+            sys.exit(1)
         best_path = train(model, train_loader, val_loader, class_weights)
         ckpt = torch.load(best_path, map_location="cpu", weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
