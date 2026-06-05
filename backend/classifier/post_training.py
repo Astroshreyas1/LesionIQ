@@ -13,6 +13,7 @@ Usage:
 """
 
 import os
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
@@ -23,7 +24,12 @@ from backend.classifier.config import DEVICE, NUM_CLASSES, USE_AMP, OUTPUT_DIR, 
 from backend.classifier.models import LesionIQHybrid
 from backend.classifier.dataloader import get_dataloaders
 
-CKPT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
+# Use the same checkpoint location as inference.py (backend/checkpoints/).
+# Fall back to OUTPUT_DIR/checkpoints/ for backward compatibility with older
+# training runs that may have saved there.
+_PRIMARY_CKPT_DIR = Path(__file__).resolve().parent.parent / "checkpoints"
+_LEGACY_CKPT_DIR  = Path(OUTPUT_DIR) / "checkpoints"
+CKPT_DIR = str(_PRIMARY_CKPT_DIR if _PRIMARY_CKPT_DIR.exists() else _LEGACY_CKPT_DIR)
 MODES = ["effnet_only", "swin_only", "image_only", "full"]
 
 

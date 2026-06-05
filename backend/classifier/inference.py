@@ -364,7 +364,36 @@ def _load_runtime(mode="full", checkpoint_path=None,
             print(f"[OK] Per-class temperature scaling loaded "
                   f"(mean T={per_class_temperatures.mean():.4f})")
 
-    return model, scales, temperature, mel_threshold, per_class_temperatures
+    # Prior-shift adaptation is OPT-IN. Activated by LESIONIQ_ADAPT_PRIOR=sld|oracle.
+    # Loads:
+    #   effective_train_prior.npy   (the prior the model actually learned)
+    #   target_prior_{mode}.npy     (the target prior computed offline, by
+    #       backend.classifier.compute_effective_train_prior for the train
+    #       side and either an SLD batch run or oracle class-count for the
+    #       test side -- see prior_adaptation.py)
+    # At inference, probs are corrected via prior_adaptation.adjust_probs_for_prior.
+    # Default mode "none" keeps existing behavior bit-identical.
+    prior_adapt_mode = os.getenv("LESIONIQ_ADAPT_PRIOR", "none").lower()
+    train_prior = None
+    target_prior = None
+    if prior_adapt_mode in ("sld", "oracle"):
+        tp_path = CKPT_DIR / "effective_train_prior.npy"
+        target_path = CKPT_DIR / f"target_prior_{prior_adapt_mode}.npy"
+        if tp_path.exists() and target_path.exists():
+            train_prior  = np.load(str(tp_path)).astype(np.float32)
+            target_prior = np.load(str(target_path)).astype(np.float32)
+            print(f"[OK] Prior-shift adaptation active "
+                  f"(mode={prior_adapt_mode}, target mean={target_prior.mean():.3f})")
+        else:
+            missing = []
+            if not tp_path.exists():    missing.append(str(tp_path))
+            if not target_path.exists(): missing.append(str(target_path))
+            print(f"[WARN] LESIONIQ_ADAPT_PRIOR={prior_adapt_mode} but missing: "
+                  f"{missing}. Falling back to no prior adjustment.")
+            prior_adapt_mode = "none"
+
+    return (model, scales, temperature, mel_threshold,
+            per_class_temperatures, train_prior, target_prior, prior_adapt_mode)
 
 
 # ===================================================================
@@ -1055,7 +1084,8 @@ def _compute_shap_values(model, image_tensor, meta_tensor):
 
 def diagnose_image(model, image_path, meta_tensor, scales, temperature,
                    output_dir, raw_meta, mel_threshold=None,
-                   per_class_temperatures=None):
+                   per_class_temperatures=None,
+                   train_prior=None, target_prior=None, prior_adapt_mode="none"):
     """Run the full 5-stage pipeline on a single image.
 
     Produces a case folder with raw, preprocessing, explainability, and
@@ -1079,6 +1109,16 @@ def diagnose_image(model, image_path, meta_tensor, scales, temperature,
     # -- Classify (TTA + temperature calibration + DiffEvo) --
     probs = predict(model, img_tensor, meta_tensor, temperature, scales,
                     per_class_temperatures)
+
+    # Prior-shift adaptation (opt-in). Applied AFTER calibration + DiffEvo
+    # but BEFORE MEL safety, so MEL safety still triggers on raw model
+    # confidence rather than adjusted confidence.
+    prior_adapt_applied = False
+    if (prior_adapt_mode in ("sld", "oracle")
+            and train_prior is not None and target_prior is not None):
+        from backend.classifier.prior_adaptation import adjust_probs_for_prior
+        probs = adjust_probs_for_prior(probs[np.newaxis, :], train_prior, target_prior)[0]
+        prior_adapt_applied = True
 
     # MEL safety override: if raw MEL prob exceeds threshold, force MEL
     mel_safety_applied = False
@@ -1151,6 +1191,8 @@ def diagnose_image(model, image_path, meta_tensor, scales, temperature,
             "thresholds_applied": scales is not None,
             "mel_safety_threshold": round(mel_threshold, 3) if mel_threshold else None,
             "mel_safety_triggered": mel_safety_applied,
+            "prior_adapt_mode": prior_adapt_mode,
+            "prior_adapt_applied": prior_adapt_applied,
         },
         "prediction": {
             "class": pred_cls,
@@ -1260,8 +1302,8 @@ def run_inference_pipeline(image_path, age, sex, site, mode="full",
     if site_value in {"", "na", "unknown"}:
         site_value = None
 
-    model, scales, temperature, mel_threshold, per_class_temperatures = _load_runtime(
-        mode, checkpoint_path)
+    (model, scales, temperature, mel_threshold, per_class_temperatures,
+     train_prior, target_prior, prior_adapt_mode) = _load_runtime(mode, checkpoint_path)
     meta_tensor = encode_metadata(age_value, sex_value, site_value) \
         if mode == "full" else None
     raw_meta = {
@@ -1272,7 +1314,8 @@ def run_inference_pipeline(image_path, age, sex, site, mode="full",
 
     return diagnose_image(
         model, image_path, meta_tensor, scales, temperature,
-        output_dir, raw_meta, mel_threshold, per_class_temperatures)
+        output_dir, raw_meta, mel_threshold, per_class_temperatures,
+        train_prior, target_prior, prior_adapt_mode)
 
 
 # ===================================================================
@@ -1307,6 +1350,13 @@ def main():
                         help="Disable temperature scaling")
     parser.add_argument("--no-mel-safety",  action="store_true",
                         help="Disable MEL recall safety threshold")
+    parser.add_argument("--adapt-prior",    default="none",
+                        choices=["none", "sld", "oracle"],
+                        help="Apply post-hoc prior-shift correction using a "
+                             "precomputed target prior. Requires "
+                             "effective_train_prior.npy and target_prior_<mode>.npy "
+                             "in backend/checkpoints/. Default 'none' keeps "
+                             "the existing behavior.")
     parser.add_argument("--interactive",    action="store_true",
                         help="Force interactive metadata prompts")
 
@@ -1347,6 +1397,24 @@ def main():
         if mel_path.exists():
             mel_threshold = float(np.load(str(mel_path)))
             print(f"[OK] MEL safety threshold: {mel_threshold:.3f}")
+
+    # ── Load prior-shift adaptation assets (opt-in) ──
+    train_prior  = None
+    target_prior = None
+    prior_adapt_mode = args.adapt_prior
+    if prior_adapt_mode in ("sld", "oracle"):
+        tp_path     = CKPT_DIR / "effective_train_prior.npy"
+        target_path = CKPT_DIR / f"target_prior_{prior_adapt_mode}.npy"
+        if tp_path.exists() and target_path.exists():
+            train_prior  = np.load(str(tp_path)).astype(np.float32)
+            target_prior = np.load(str(target_path)).astype(np.float32)
+            print(f"[OK] Prior-shift adaptation active "
+                  f"(mode={prior_adapt_mode}, target mean={target_prior.mean():.3f})")
+        else:
+            missing = [str(p) for p in (tp_path, target_path) if not p.exists()]
+            print(f"[WARN] --adapt-prior {prior_adapt_mode} but missing files: "
+                  f"{missing}. Falling back to no prior adjustment.")
+            prior_adapt_mode = "none"
 
     # ── Metadata ──
     # Determine if we need interactive prompts:
@@ -1410,7 +1478,8 @@ def main():
         try:
             result = diagnose_image(
                 model, img_path, meta_tensor, scales, temperature,
-                args.output_dir, raw_meta, mel_threshold, per_class_temperatures)
+                args.output_dir, raw_meta, mel_threshold, per_class_temperatures,
+                train_prior, target_prior, prior_adapt_mode)
             all_results.append(result["diagnosis"])
         except Exception as e:
             print(f"  [ERROR] {Path(img_path).name}: {e}")
