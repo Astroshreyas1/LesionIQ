@@ -171,15 +171,22 @@ LesionIQ/backend/
 - **`torch.autocast`** — wraps forward passes on CUDA for reduced activation memory
 
 ### Post-Training Pipeline
-- **Per-Class Threshold Tuning** via Nelder-Mead optimization with 80/20 overfit protection
-- **4-Model Ensemble** — simple average + optimized weighted average
-- **Temperature Scaling** — LBFGS-optimized calibration for clinical confidence scores
+- **Per-Class Threshold Tuning** via Differential Evolution with 80/20 overfit protection
+- **3-Model Ensemble** — logit-space averaging (mathematically correct vs. softmax-then-average); simple average + optimized weighted average
+- **Calibration suite** — three independent methods, all post-hoc, no retraining:
+  - **Global Temperature Scaling** — single scalar T fit via LBFGS on val logits. Kept as fallback.
+  - **Per-Class Temperature Scaling** — 8 independent scalars (one per class). Fixes the over-confident-on-rare-classes bug introduced when a single T is fit on a NV+MEL-dominated val set.
+  - **Dirichlet Calibration** *(experimental)* — full 8×8 affine transformation on logits (Kull et al., NeurIPS 2019). Captures cross-class correlations (e.g. the structured SCC↔BCC confusion). Gated by `LESIONIQ_USE_DIRICHLET=1`.
+- **Prior-shift Adaptation** *(opt-in)* — addresses the val→test class-distribution shift via post-hoc logit re-weighting:
+  - `--adapt-prior oracle` — uses the empirical test-set class proportions
+  - `--adapt-prior sld` — Saerens-Latinne-Decaestecker EM estimation from unlabelled predictions
+- **Expected Calibration Error (ECE)** — overall + per-class ECE plus reliability-diagram artefacts written by `evaluate.py`.
 
 ### Clinical Explainability
 - **EfficientNet Branch**: Grad-CAM++ heatmaps for CNN feature visualization.
 - **SwinV2 Branch**: Attention rollout visualisations for transformer patch attribution.
 - **Metadata Branch (MLP)**: Perturbation-based feature attribution for tabular feature importance.
-- **Temperature Scaling**: Logits are divided by calibrated temperature (T=0.75) before softmax for improved confidence calibration.
+- **Temperature Scaling**: Logits are divided by per-class temperatures (8 scalars fit independently on validation logits) before softmax. A single global T is kept as fallback. See the [Calibration Suite](#calibration-suite-2026-06) section below for the ablation.
 - **Final Output Generation**: Visual explainability artifacts (Grad-CAM++ overlays, Swin attention maps) and structured feature data (SHAP values, confidence scores, metadata) are packaged into a diagnostic bundle (`diagnosis.json` + images) and fed into Gemma 3 4B-IT (served via Ollama) to generate image-aware, clinically grounded explanations. Deterministic post-validation catches hallucinated claims against source evidence.
 - **SLM Validation & Fallback**: `validate_and_repair_slm_output()` enforces a strict schema check (required headings, forbidden bracket tokens, unsafe directive phrases). If the SLM response fails validation, a deterministic `_fallback_slm_report()` is generated from the evidence packet, guaranteeing a clinically grounded report is always available.
 - **Feature Hints Pipeline**: `build_feature_hints()` converts raw Grad-CAM++ and attention summaries into conservative clinical hints (primary feature, evidence alignment, uncertainty flags, clinical context) which are embedded in the SLM evidence packet.
@@ -194,45 +201,67 @@ LesionIQ/backend/
 
 ## Results
 
-### Ablation Study
+### Ablation Study (validation set)
 
 | Mode | Val F1 (macro) | Val AUC | Val Acc | Notes |
 |------|----------------|---------|---------|-------|
 | `effnet_only` | 0.5392 | — | — | EfficientNet-B4 backbone only |
 | `image_only` | 0.5646 | — | — | EfficientNet-B4 + Swin-Base (no metadata) |
 | `full` | 0.5924 | 0.9330 | 0.7503 | Both backbones + metadata MLP |
-| `full` + DiffEvo | 0.6066 | 0.9330 | 0.7613 | + Differential Evolution thresholds |
-| **3-Model Ensemble + Clinical DiffEvo** | **0.6165** | **0.9404** | **0.7571** | Best overall configuration |
-
-### Per-Class Breakdown (Ensemble + Clinical DiffEvo)
-
-| Class | Precision | Recall | F1 | Support | Clinical Notes |
-|-------|-----------|--------|------|---------|----------------|
-| MEL | 0.6385 | 0.6349 | 0.6367 | 882 | 21% misclassified as NV |
-| NV | 0.8973 | 0.8670 | 0.8819 | 2571 | Dominant class, well-separated |
-| BCC | 0.6597 | 0.8198 | 0.7311 | 655 | High recall, absorbs SCC misses |
-| AK | 0.4459 | 0.3815 | 0.4112 | 173 | 20% confused with BKL |
-| BKL | 0.6206 | 0.5683 | 0.5933 | 498 | — |
-| DF | 0.4667 | 0.4884 | 0.4773 | 43 | Small sample, volatile |
-| VASC | 0.9444 | 0.7083 | 0.8095 | 48 | Highest precision |
-| SCC | 0.3759 | 0.4065 | 0.3906 | 123 | **31% confused with BCC** |
+| `full` + DiffEvo | 0.6099 | 0.9330 | 0.7582 | + Differential Evolution thresholds |
+| **`full` + DiffEvo + Per-class T** | **0.6270** | **0.9330** | **0.7794** | + per-class temperature scaling |
+| **3-Model Ensemble + Clinical DiffEvo** | **0.6165** | **0.9404** | **0.7571** | (Previous best configuration) |
 
 ### Confusion Matrix Insights
 
-The dominant misclassification patterns are **not** AK↔SCC as initially hypothesized, but rather:
-- **SCC → BCC (31%)**: The largest SCC failure mode. Both are keratinocyte-origin lesions with overlapping morphology.
-- **MEL → NV (22%)**: Melanocytic lesion confusion — the classic dermoscopy challenge.
-- **AK → BKL (20%)**: AK misclassified as benign keratosis.
-- **AK ↔ SCC (10-14%)**: Bidirectional confusion, but secondary to BCC/BKL confusion.
+The dominant misclassification patterns:
+- **SCC → BCC**: keratinocyte-origin lesions with overlapping morphology.
+- **MEL → NV**: melanocytic lesion confusion — the classic dermoscopy challenge.
+- **AK → BKL**: AK misclassified as benign keratosis.
+- **BKL**: an umbrella term covering several morphologies (seborrheic keratosis, solar lentigo, lichenoid keratosis), which makes it the hardest class to separate consistently.
 
-### Post-Training Optimization
+### Calibration Suite (2026-06)
 
-- **Threshold tuning**: Clinical-aware Differential Evolution (asymmetric bounds for AK/SCC [1.5, 6.0]) boosts Macro-F1 from 0.5938 → **0.6165** (+0.0227).
-- **MEL recall safety**: Forcing MEL recall ≥ 85% costs -0.04 macro-F1 (precision drops to 0.40). Discarded in favor of maintaining overall F1 > 0.60.
-- **Temperature scaling**: Optimal T=0.75 (NLL 0.7761 → 0.7432). Improves confidence calibration.
-- **Ensemble**: 3-model average (effnet_only + image_only + full) boosts AUC from 0.9330 → 0.9404.
+ECE (Expected Calibration Error, 15-bin) on validation:
 
-> Evaluated on held-out ISIC 2019 validation set (4,993 images). The clinical-aware optimizer uses weighted per-class F1 (MEL=2.0, SCC=2.5, NV=0.5) to prioritize malignancy detection.
+| Method | NLL | ECE | MCE | Accuracy |
+|--------|-----|------|------|----------|
+| Raw (uncalibrated) | 0.810 | 0.131 | 0.212 | 0.751 |
+| Global T = 0.69 | 0.749 | 0.023 | 0.247 | 0.751 |
+| **Per-class T (×8)** | **0.695** | **0.019** | 0.244 | 0.751 |
+| **Dirichlet** *(experimental)* | **0.597** | **0.019** | **0.135** | **0.779** |
+
+Per-class temperatures fit on val:
+
+| Class | T | Interpretation |
+|-------|------|----------------|
+| MEL | 0.54 | Sharpening — under-confident, raw probs too soft |
+| NV | 0.50 | Sharpening — same |
+| BCC | 1.03 | ≈ 1, well-calibrated |
+| AK | 1.09 | Slight smoothing |
+| BKL | 0.69 | Moderate sharpening |
+| DF | 1.28 | Smoothing — over-confident on rare class |
+| VASC | 0.74 | Sharpening |
+| SCC | 0.95 | ≈ 1 |
+
+> A single global T was being pulled toward 0.7 by NV+MEL gradient mass on val (50.8% + 17.8% = 69% of samples). That same T over-sharpens DF and AK where the model is already over-confident. Per-class T disentangles this. Test-set ECE numbers (raw 0.062, global 0.071, per-class 0.071) are higher because the temperatures were fit on the val distribution; the prior-shift adaptation flag is the second-stage fix.
+
+### Effective Training Prior vs. Test Prior
+
+WeightedRandomSampler + Focal Loss flatten the effective training prior the model has actually learned, well below the raw class counts:
+
+| Class | Raw train % | Effective train prior | Test prior (oracle) | SLD-estimated test prior |
+|-------|-------------|-----------------------|---------------------|---------------------------|
+| MEL | 17.85 | 17.9 | 21.4 | 20.0 |
+| NV | 50.83 | 38.7 | 40.3 | 45.3 |
+| BCC | 13.12 | 17.6 | 15.7 | 17.0 |
+| AK | 3.42 | 6.1 | 6.0 | 9.7 |
+| BKL | 10.36 | 7.4 | 10.7 | 2.3 |
+| DF | 0.94 | 4.6 | 1.5 | 1.1 |
+| VASC | 1.00 | 3.5 | 1.7 | 1.8 |
+| SCC | 2.48 | 4.3 | 2.7 | 2.8 |
+
+> SLD vs. oracle L∞ error = 0.083. SLD is most useful when (a) the model is well-calibrated on the deployment distribution and (b) no test labels are available. When labels exist, the `oracle` mode is strictly better.
 
 ---
 
@@ -430,14 +459,37 @@ python backend/classifier/train_classifier.py --fix-swa --checkpoint backend/che
 
 ### Post-Training Optimization
 ```bash
-# Works with 2+ checkpoints (skips missing ones gracefully):
-python backend/classifier/post_training.py
+# Generates optimal_scales.npy, optimal_temperature.npy, and
+# per_class_temperatures.npy in backend/checkpoints/.
+python -m backend.classifier.post_training
 ```
 
-### Evaluation
+### Calibration Suite (no retraining, run after Post-Training Optimization)
 ```bash
-python backend/classifier/train_classifier.py --eval-only --checkpoint backend/output/checkpoints/best_full.pt
+# Dirichlet calibration (experimental, off by default in production)
+python -m experimental.calibrate_dirichlet --mode full
+
+# Effective training prior (handles WeightedRandomSampler reweighting)
+python -m backend.classifier.compute_effective_train_prior
+
+# Target priors for --adapt-prior {sld,oracle} at inference time
+python -m backend.classifier.compute_target_priors
 ```
+
+### Evaluation (test set, with ECE comparison + reliability diagrams)
+```bash
+python backend/classifier/train_classifier.py --eval-only --checkpoint backend/checkpoints/best_full.pt
+```
+Outputs `backend/output/reports/classification_report.json` plus
+`reliability_{raw,global_T,per_class_T}.png` and `confusion_matrix.png`.
+
+### Layer-0 CSV builder (one-time, after placing the raw ISIC dataset)
+```bash
+python -m backend.data.build_layer0_csvs \
+  --train-images dataset/ISIC_2019_Training_Input/ISIC_2019_Training_Input \
+  --test-images  dataset/ISIC_2019_Test_Input/ISIC_2019_Test_Input
+```
+Generates `backend/data/layer0_{train,val,test}.csv` from the raw GroundTruth + Metadata files. Stratified 80/20 split with `random_state=42`.
 
 ---
 
@@ -776,8 +828,9 @@ The SLM response is validated by `validate_and_repair_slm_output()`, which check
 | `--sex` | interactive | `male`, `female`, `unknown`, or `NA` |
 | `--site` | interactive | Anatomical site (e.g. `head/neck`) or `NA` |
 | `--no-scales` | off | Disable DiffEvo threshold scaling |
-| `--no-temperature` | off | Disable temperature scaling |
+| `--no-temperature` | off | Disable both global and per-class temperature scaling |
 | `--no-mel-safety` | off | Disable MEL recall safety override |
+| `--adapt-prior` | `none` | Prior-shift adaptation. `none` / `sld` / `oracle` |
 | `--interactive` | auto | Force interactive metadata prompts |
 
 > **Requirements:** `torch`, `torchvision`, `timm`, `albumentations`, `pillow`, `numpy`, `opencv-python`. VRAM: ~3 GB (fp16) / ~6 GB (fp32).
@@ -854,23 +907,42 @@ Key changes from v2:
 
 #### Deployed Configuration
 
-The production pipeline uses **both** v3 DiffEvo scales and MEL safety:
+The production pipeline auto-loads whichever of the following files are present in `backend/checkpoints/`. All paths fall back gracefully when a file is missing.
 
-```
-optimal_scales.npy          -- v3 Clinical-Weighted DiffEvo scales
-mel_safety_threshold.npy    -- MEL raw probability threshold (0.265)
-optimal_temperature.npy     -- LBFGS-calibrated temperature (0.75)
-```
+| File | Purpose | Loaded by default? |
+|------|---------|---------------------|
+| `optimal_scales.npy` | DiffEvo per-class threshold scales | yes |
+| `mel_safety_threshold.npy` | MEL raw-prob override threshold (0.265) | yes |
+| `optimal_temperature.npy` | Global scalar T (fallback) | yes |
+| `per_class_temperatures.npy` | **8 per-class temperatures (supersedes global T)** | yes |
+| `effective_train_prior.npy` | Mean softmax over train set | only when `--adapt-prior` is set |
+| `target_prior_sld.npy` | SLD-estimated test prior | `--adapt-prior sld` |
+| `target_prior_oracle.npy` | Empirical test class counts | `--adapt-prior oracle` |
+| `dirichlet_cal.npz` | Dirichlet K×K affine (experimental) | only when `LESIONIQ_USE_DIRICHLET=1` |
 
-All three calibration files are stored in `backend/checkpoints/` and are loaded automatically by `_load_runtime()` (cached via `lru_cache`) when the inference pipeline or API is invoked.
+All files are loaded once by `_load_runtime()` (cached via `lru_cache`) when the inference pipeline or API is invoked.
 
-At inference, if the raw (pre-scaling) MEL probability >= 0.265, the prediction is overridden to MEL regardless of the scaled argmax. This forces MEL recall to ~80% at the cost of precision (0.64 to 0.44). The tradeoff is clinically appropriate — **flagging a false positive is preferable to missing a melanoma.**
+**Calibration precedence** at inference: if `per_class_temperatures.npy` exists it replaces the global scalar; otherwise the global T is used; otherwise raw logits. `--no-temperature` disables both. Dirichlet (when enabled) is checked separately and overrides both temperature paths.
 
-Disable with `--no-mel-safety` when precision matters more (e.g., batch screening).
+**MEL safety:** if the raw (pre-scaling) MEL probability >= 0.265, the prediction is overridden to MEL regardless of the scaled argmax. This forces MEL recall to ~80% at the cost of precision (0.64 to 0.44). The tradeoff is clinically appropriate — **flagging a false positive is preferable to missing a melanoma.** Disable with `--no-mel-safety` when precision matters more (e.g., batch screening).
+
+**Prior-shift adaptation** (opt-in via `--adapt-prior {none,sld,oracle}` or `LESIONIQ_ADAPT_PRIOR` env var) applies a logit correction `log(P_test/P_train_effective)` before softmax. Default `none` keeps the existing behavior bit-identical.
 
 ---
 
 ## Changelog
+
+### 2026-06 — Calibration Suite + Prior-Shift Adaptation (no retraining)
+
+- **Per-class temperature scaling** — `PerClassTemperatureScaler` in `post_training.py` fits 8 independent scalars via LBFGS on val logits. Saved to `per_class_temperatures.npy` and loaded automatically by `_load_runtime()`. Replaces the single global T at runtime when present.
+- **Dirichlet calibration (experimental)** — Full K×K affine transform `z_cal = W·log_softmax(z) + b` fit via LBFGS on val logits with L2 regularization on the off-diagonal of `W`. Kept off the live pipeline by default; gated by `LESIONIQ_USE_DIRICHLET=1`. Lives at `experimental/calibrate_dirichlet.py`.
+- **Prior-shift adaptation (SLD)** — Saerens-Latinne-Decaestecker EM estimation of the deployment-set prior from unlabelled predictions, plus oracle prior from test class counts. Logit correction `log(P_test/P_train_effective)` applied before softmax. Opt-in via `--adapt-prior {none,sld,oracle}` CLI flag or `LESIONIQ_ADAPT_PRIOR` env var. Default `none` keeps existing behavior bit-identical.
+- **Effective training prior** — Mean softmax over training set. Accounts for the WeightedRandomSampler + Focal Loss reweighting effect (e.g. DF's effective prior is 4.6% vs. 0.9% raw count). Computed by `compute_effective_train_prior.py`.
+- **ECE evaluation** — Overall ECE, per-class ECE, MCE (Maximum Calibration Error), and reliability-diagram PNG artifacts added to `evaluate.py`. The test set classification report now includes a calibration ablation table (raw / global-T / per-class-T) alongside the standard F1/AUC/sensitivity/specificity grid.
+- **Logit-space ensemble** — `boost_f1*.py` and `post_training.ensemble_predictions()` now average raw logits before a single final softmax, instead of averaging post-softmax probabilities (the prior path blunts rare-class predictions at the decision boundary because softmax is non-linear). Pre-existing temperature/DiffEvo/MEL-safety semantics preserved.
+- **Layer-0 CSV builder** — `backend/data/build_layer0_csvs.py` reconstructs `layer0_{train,val,test}.csv` from raw ISIC distribution (GroundTruth + Metadata). Stratified 80/20 train/val split with `random_state=42`; drops UNK-class rows; one-hot encodes sex + 9 anatomical sites.
+- **`--adapt-prior` CLI flag + new `diagnosis.json` fields** — additive only: `calibration_mode`, `prior_adapt_mode`, `prior_adapt_applied`. Frontend `CaseRecord` schema unchanged.
+- **wandb made a soft dep** — `train_classifier.py` no longer requires `wandb` for `--eval-only` or `--fix-swa` runs. Training paths still need it.
 
 ### 2026-06 — Performance, Remote SLM, and Deployment
 
