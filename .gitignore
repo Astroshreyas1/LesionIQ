@@ -108,3 +108,6 @@ backend/checkpoints/checkpoints/
 
 # Logit caches (regeneratable; large)
 backend/checkpoints/val_logits_*.npz
+
+# Windows shortcuts (stray local junk)
+*.lnk
