@@ -1,7 +1,7 @@
 # LesionIQ Research — Semester Project
 
 This folder is the **research project**, completely separate from the
-hackathon code in `backend/` and `frontend/`. Nothing here imports from
+project code in `backend/` and `frontend/`. Nothing here imports from
 or modifies the hackathon pipeline.
 
 ## Read first
